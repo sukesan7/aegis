@@ -40,6 +40,12 @@ type RouteResponse = {
   steps?: NavStep[];
 };
 
+type AlgoStats = {
+  exec_ms: number;
+  eta_s: number;
+  dist_m: number;
+};
+
 const api = axios.create({
   // If you set VITE_API_BASE=http://127.0.0.1:8000, this will use it.
   // Otherwise it stays relative and works with the Vite proxy (/api -> backend).
@@ -134,11 +140,17 @@ export default function LiveMap({
   const [endPoint, setEndPoint] = useState<LatLng | null>(null);
   const [isFollowing, setIsFollowing] = useState(true);
 
+  // Algorithm comparison
+  const algoRef = useRef<'dijkstra' | 'bmsssp'>('dijkstra');
+  const [algoStats, setAlgoStats] = useState<{ dijkstra?: AlgoStats; bmsssp?: AlgoStats }>({});
+  const [showEtaPanel, setShowEtaPanel] = useState(false);
+  const [isFetchingStats, setIsFetchingStats] = useState(false);
+
   // UI feedback
   const [isRouting, setIsRouting] = useState(false);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeReady, setRouteReady] = useState(false);  // route loaded, waiting for GO
-  const [simRunning, setSimRunning] = useState(false);  // animation is in progress
+  const [simRunning, setSimRunning] = useState(false);   // animation is in progress
 
   // Autocomplete
   type Suggestion = { lat: number; lng: number; display_name: string };
@@ -298,6 +310,7 @@ export default function LiveMap({
         start,
         end: endOverride ?? endPoint,
         scenario_type: activeScenario?.title || 'ROUTINE',
+        algorithm: algoRef.current,
       }, { signal: controller.signal });
 
       const coords = (res.data?.path_coordinates || []) as [number, number][];
@@ -318,6 +331,14 @@ export default function LiveMap({
       } else if (ambulanceMarker.current) {
         ambulanceMarker.current.setLngLat(coords[0]);
       }
+
+      // Store comparison stats for the current algorithm
+      const statsEntry: AlgoStats = {
+        exec_ms: Number(res.data.execution_time_ms ?? 0),
+        eta_s: totalTime,
+        dist_m: totalDist,
+      };
+      setAlgoStats((prev) => ({ ...prev, [algoRef.current]: statsEntry }));
 
       routeRef.current = {
         coords,
@@ -363,6 +384,8 @@ export default function LiveMap({
         setRouteReady(true);  // enable GO button, wait for user click
       }
     } catch (e: any) {
+      // Ignore aborted requests
+      if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return;
       console.error('Route fetch failed', e);
       setRouteError(
         e?.response?.data?.detail ||
@@ -409,6 +432,40 @@ export default function LiveMap({
     // Clear the route line from the map
     const src = map.current?.getSource('aegis-route') as any;
     if (src) src.setData({ type: 'FeatureCollection', features: [] });
+  };
+
+  // Fetch stats for both algorithms (for comparison panel)
+  const fetchBothAlgoStats = async () => {
+    setIsFetchingStats(true);
+    const cur = ambulanceMarker.current?.getLngLat();
+    const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: 43.8334, lng: -79.2578 };
+    const body = {
+      start,
+      end: endPoint,
+      scenario_type: activeScenario?.title || 'ROUTINE',
+    };
+    try {
+      const [dRes, bRes] = await Promise.all([
+        api.post<RouteResponse>('/api/algo/calculate', { ...body, algorithm: 'dijkstra' }),
+        api.post<RouteResponse>('/api/algo/calculate', { ...body, algorithm: 'bmsssp' }),
+      ]);
+      setAlgoStats({
+        dijkstra: {
+          exec_ms: Number(dRes.data.execution_time_ms ?? 0),
+          eta_s: Number(dRes.data.total_time_s ?? 0),
+          dist_m: Number(dRes.data.total_distance_m ?? 0),
+        },
+        bmsssp: {
+          exec_ms: Number(bRes.data.execution_time_ms ?? 0),
+          eta_s: Number(bRes.data.total_time_s ?? 0),
+          dist_m: Number(bRes.data.total_distance_m ?? 0),
+        },
+      });
+    } catch (e) {
+      console.error('Failed to fetch comparison stats', e);
+    } finally {
+      setIsFetchingStats(false);
+    }
   };
 
   const handleGeocode = async () => {
@@ -598,25 +655,55 @@ export default function LiveMap({
       <div ref={mapContainer} className="w-full h-full rounded-2xl overflow-hidden border border-white/10" />
 
       {/* HUD: MINIMAL CORNER OVERLAY */}
-      <div className="absolute top-4 left-4 bg-black/80 backdrop-blur-xl p-3 rounded-lg border border-cyan-500/30 flex flex-col gap-1 min-w-[220px]">
-        <div className="flex items-center gap-2">
-          <div
-            className={`w-2 h-2 rounded-full ${activeScenario?.isRedAlert ? 'bg-red-500 animate-pulse' : 'bg-cyan-400'
-              }`}
-          />
-          <span className="text-cyan-400 text-[10px] font-mono font-bold uppercase tracking-tighter">
-            {activeScenario?.title || 'SYSTEM IDLE'}
-          </span>
-        </div>
-        <div className="text-[9px] text-gray-500 font-mono">
-          UNIT 992 // {currentPos ? `${currentPos[0].toFixed(5)}, ${currentPos[1].toFixed(5)}` : '--, --'}
-        </div>
-        {routeRef.current?.totalDist != null && routeRef.current?.totalTime != null && (
+      <div className="absolute top-4 left-4 flex flex-col gap-2">
+        <div className="bg-black/80 backdrop-blur-xl p-3 rounded-lg border border-cyan-500/30 flex flex-col gap-1 min-w-[220px]">
+          <div className="flex items-center gap-2">
+            <div
+              className={`w-2 h-2 rounded-full ${activeScenario?.isRedAlert ? 'bg-red-500 animate-pulse' : 'bg-cyan-400'
+                }`}
+            />
+            <span className="text-cyan-400 text-[10px] font-mono font-bold uppercase tracking-tighter">
+              {activeScenario?.title || 'SYSTEM IDLE'}
+            </span>
+          </div>
           <div className="text-[9px] text-gray-500 font-mono">
-            ROUTE // {(routeRef.current.totalDist / 1000).toFixed(2)} km // ETA {formatEta(routeRef.current.totalTime)}
+            UNIT 992 // {currentPos ? `${currentPos[0].toFixed(5)}, ${currentPos[1].toFixed(5)}` : '--, --'}
+          </div>
+          {routeRef.current?.totalDist != null && routeRef.current?.totalTime != null && (
+            <div className="text-[9px] text-gray-500 font-mono">
+              ROUTE // {(routeRef.current.totalDist / 1000).toFixed(2)} km // ETA {formatEta(routeRef.current.totalTime)}
+            </div>
+          )}
+          {routeError && <div className="text-[10px] text-red-300 font-mono mt-1 max-w-[300px]">{routeError}</div>}
+        </div>
+
+        {/* Algorithm comparison stats */}
+        {showEtaPanel && (
+          <div className="bg-black/80 backdrop-blur-xl p-3 rounded-lg border border-cyan-500/30 min-w-[280px]">
+            <div className="text-[10px] text-cyan-400 font-mono font-bold uppercase tracking-wider mb-2">Algorithm Comparison</div>
+            {isFetchingStats ? (
+              <div className="text-[9px] text-gray-400 font-mono animate-pulse">Fetching both routes...</div>
+            ) : (
+              <div className="grid grid-cols-3 gap-1 text-[9px] font-mono">
+                <div className="text-gray-500"></div>
+                <div className="text-cyan-300 text-center">DIJKSTRA</div>
+                <div className="text-purple-300 text-center">DUAN-MAO</div>
+
+                <div className="text-gray-500">EXEC</div>
+                <div className="text-cyan-200 text-center">{algoStats.dijkstra ? `${algoStats.dijkstra.exec_ms.toFixed(0)}ms` : '—'}</div>
+                <div className="text-purple-200 text-center">{algoStats.bmsssp ? `${algoStats.bmsssp.exec_ms.toFixed(0)}ms` : '—'}</div>
+
+                <div className="text-gray-500">ETA</div>
+                <div className="text-cyan-200 text-center">{algoStats.dijkstra ? formatEta(algoStats.dijkstra.eta_s) : '—'}</div>
+                <div className="text-purple-200 text-center">{algoStats.bmsssp ? formatEta(algoStats.bmsssp.eta_s) : '—'}</div>
+
+                <div className="text-gray-500">DIST</div>
+                <div className="text-cyan-200 text-center">{algoStats.dijkstra ? `${(algoStats.dijkstra.dist_m / 1000).toFixed(2)}km` : '—'}</div>
+                <div className="text-purple-200 text-center">{algoStats.bmsssp ? `${(algoStats.bmsssp.dist_m / 1000).toFixed(2)}km` : '—'}</div>
+              </div>
+            )}
           </div>
         )}
-        {routeError && <div className="text-[10px] text-red-300 font-mono mt-1 max-w-[300px]">{routeError}</div>}
       </div>
 
       {/* Destination input with autocomplete */}
@@ -670,10 +757,10 @@ export default function LiveMap({
             }}
             disabled={isRouting || simRunning}
             className={`px-3 py-1 rounded border text-xs font-mono ${isRouting || simRunning
-                ? 'bg-white/5 border-white/10 text-gray-400 cursor-not-allowed'
-                : routeReady
-                  ? 'bg-green-500/20 border-green-400/40 text-green-300 hover:bg-green-500/30 animate-pulse'
-                  : 'bg-cyan-500/20 border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/30'
+              ? 'bg-white/5 border-white/10 text-gray-400 cursor-not-allowed'
+              : routeReady
+                ? 'bg-green-500/20 border-green-400/40 text-green-300 hover:bg-green-500/30 animate-pulse'
+                : 'bg-cyan-500/20 border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/30'
               }`}
           >
             {isRouting ? '...' : simRunning ? 'MOVING' : routeReady ? '▶ GO' : 'GO'}
@@ -694,6 +781,20 @@ export default function LiveMap({
               ✕
             </button>
           )}
+          <button
+            onClick={() => {
+              const next = !showEtaPanel;
+              setShowEtaPanel(next);
+              if (next) fetchBothAlgoStats();
+            }}
+            disabled={isRouting}
+            className={`px-2 py-1 rounded border text-xs font-mono transition-colors ${showEtaPanel
+              ? 'bg-cyan-500/30 border-cyan-400/50 text-cyan-300'
+              : 'border-white/10 text-gray-400 hover:text-cyan-300'
+              } ${isRouting ? 'opacity-50 cursor-not-allowed' : ''}`}
+          >
+            Dev
+          </button>
         </div>
       </div>
     </div>
