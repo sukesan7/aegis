@@ -123,33 +123,45 @@ function computeNavLive(meta: {
 }
 
 // Scenario data for tactical injections (duplicated from ScenarioInjector for inline use)
+// 1 University Blvd, Markham (YorkU)
+const YORK_U = { lat: 43.85421582751821, lng: -79.311760971958 };
+const MARKHAM_STOUFFVILLE = { lat: 43.880, lng: -79.231 }; // Approx MSH
+const MARKVILLE_MALL = { lat: 43.868, lng: -79.289 };
+const CINEPLEX_VIP = { lat: 43.856, lng: -79.336 }; // Approx Cineplex VIP Markham
+
 const SCENARIOS: Record<string, any> = {
   CARDIAC_ARREST: {
     title: 'CARDIAC ARREST // UNIT 992',
     isRedAlert: true,
-    start: { lat: 43.858, lng: -79.54 },
-    end: { lat: 43.871, lng: -79.444 },
-    destName: 'Mackenzie Health Hospital, Richmond Hill',
-    aiPrompt: 'URGENT: 65yo Male, Cardiac Arrest at Major Mackenzie and Jane. CPR in progress. Route to Mackenzie Health immediately via optimized Duan-Mao pivots.',
+    start: YORK_U,
+    end: MARKHAM_STOUFFVILLE,
+    destName: 'Markham Stouffville Hospital',
+    aiPrompt: 'URGENT: 65yo Male, Cardiac Arrest. Patient on board. Route continuously monitored. Vitals critical.',
     vitals: { hr: 0, bp: '0/0', o2: 45 },
+    patientOnBoard: true,
   },
   MVA_TRAUMA: {
-    title: 'MVA TRAUMA // HWY 404',
+    title: 'MVA TRAUMA // MARKVILLE',
     isRedAlert: true,
-    start: { lat: 43.86, lng: -79.37 },
-    end: { lat: 43.722, lng: -79.376 },
-    destName: 'Sunnybrook Trauma Centre, Toronto',
-    aiPrompt: 'CRITICAL: Multi-vehicle accident on Hwy 404. Multiple trauma patients. Route to Sunnybrook Trauma Centre. Avoid 404 congestion using side-street pivots.',
+    start: YORK_U,
+    // Intermediate stop at Markville Mall for pickup
+    waypoints: [MARKVILLE_MALL],
+    end: MARKHAM_STOUFFVILLE,
+    destName: 'Markville Mall -> Markham Stouffville',
+    aiPrompt: 'CRITICAL: MVA at Markville Mall. Proceed to scene, stabilize, and transport to Markham Stouffville. Vitals pending patient contact.',
     vitals: { hr: 115, bp: '90/60', o2: 92 },
+    patientOnBoard: false, // Starts false, becomes true after pickup
   },
   ROUTINE_PATROL: {
     title: 'ROUTINE PATROL // ZONE B',
     isRedAlert: false,
-    start: { lat: 43.864, lng: -79.4 },
-    end: { lat: 43.88, lng: -79.4 },
-    destName: 'Richmond Hill Zone B',
-    aiPrompt: 'Unit 992, proceed with routine patrol of Richmond Hill Zone B. Maintain low-latency uplink with mission control.',
-    vitals: { hr: 72, bp: '120/80', o2: 98 },
+    start: YORK_U,
+    waypoints: [CINEPLEX_VIP, MARKVILLE_MALL],
+    end: MARKHAM_STOUFFVILLE,
+    destName: 'Patrol: Cineplex -> Markville -> MSH',
+    aiPrompt: 'Unit 992, proceed with routine patrol loop. No active incidents. Monitor Hz bands.',
+    vitals: null, // No patient
+    patientOnBoard: false,
   },
 };
 
@@ -174,6 +186,7 @@ export default function LiveMap({
   const [destQuery, setDestQuery] = useState('');
   const [endPoint, setEndPoint] = useState<LatLng | null>(null);
   const [isFollowing, setIsFollowing] = useState(true);
+  const [activeWaypointIdx, setActiveWaypointIdx] = useState<number>(-1); // -1 = direct to end, 0+ = targeting waypoint i
 
   // Algorithm comparison
   const algoRef = useRef<'dijkstra' | 'bmsssp'>('dijkstra');
@@ -234,6 +247,7 @@ export default function LiveMap({
   const scenarioRef = useRef<any>(null);
   const onNavUpdateRef = useRef<typeof onNavUpdate>(onNavUpdate);
   const routeAbortRef = useRef<AbortController | null>(null);
+  const prevScenarioRef = useRef<any>(null);
 
   // Route meta ref (provided by backend)
   const routeRef = useRef<{
@@ -387,8 +401,36 @@ export default function LiveMap({
   useEffect(() => {
     if (!map.current?.loaded()) return;
 
+    // Clear old roadblocks on new scenario
+    setActiveRoadblocks([]);
+    roadblocksRef.current = [];
+    stoppedAtRoadblock.current = false;
+    roadblockStopIdx.current = null;
+    pendingRerouteRef.current = null;
+    if (rerouteIntervalRef.current) { clearInterval(rerouteIntervalRef.current); rerouteIntervalRef.current = null; }
+
+    // Clear road closure markers
+    const closureSrc = map.current?.getSource('road-closures') as any;
+    if (closureSrc) closureSrc.setData({ type: 'FeatureCollection', features: [] });
+
+    // Trigger algorithm race mini-map for red alert scenarios
+    if (activeScenario?.isRedAlert) {
+      fetchAlgoRace(activeScenario);
+    } else {
+      setShowAlgoRace(false);
+      setAlgoRaceData(null);
+    }
+
     if (activeScenario?.end) {
-      const end = { lat: activeScenario.end.lat, lng: activeScenario.end.lng };
+      // Determine invalid/initial sequence
+      setActiveWaypointIdx(activeScenario.waypoints ? 0 : -1);
+
+      let targetPos = activeScenario.end;
+      if (activeScenario.waypoints && activeScenario.waypoints.length > 0) {
+        targetPos = activeScenario.waypoints[0];
+      }
+
+      const end = { lat: targetPos.lat, lng: targetPos.lng };
       setEndPoint(end);
       // Show destination name in search bar
       if (activeScenario.destName) setDestQuery(activeScenario.destName);
@@ -578,6 +620,7 @@ export default function LiveMap({
     setIsRouting(false);
     setDestQuery('');
     setEndPoint(null);
+    setActiveWaypointIdx(-1);
     setRouteError(null);
     setSuggestions([]);
     setShowSuggestions(false);
@@ -719,41 +762,113 @@ export default function LiveMap({
 
       if (!coords.length || !cumDist.length || !cumTime.length) return;
 
-      // --- SMOOTH TRANSITION: prepend the roadblock stop position ---
-      // The new route starts from the backend's snapped start, which might be on
-      // a different road. Prepend the roadblock stop point so the ambulance
-      // smoothly drives from the stop to the first point of the new route.
+      // --- SMOOTH TRANSITION: Backtracking Logic ---
+      // If the backend snaps the new start to a different road (e.g. previous intersection),
+      // we must drive *back* along the old route to get there, rather than cutting through buildings.
       const m = routeRef.current;
       let stopPos: [number, number] = [cur.lng, cur.lat];
+      let stopI = 0;
       if (m && roadblockStopIdx.current !== null) {
-        const si = Math.min(roadblockStopIdx.current, m.coords.length - 1);
-        stopPos = m.coords[si];
+        stopI = Math.min(roadblockStopIdx.current, m.coords.length - 1);
+        stopPos = m.coords[stopI];
+      } else if (m) {
+        stopI = clamp(findIndexByCumTime(m.cumTime, (performance.now() - startTimeRef.current) / 1000 * 8), 0, m.coords.length - 1);
+        stopPos = m.coords[stopI];
       }
 
       const firstRoutePoint = coords[0];
       const dx = firstRoutePoint[0] - stopPos[0];
       const dy = firstRoutePoint[1] - stopPos[1];
       const gapDeg = Math.sqrt(dx * dx + dy * dy);
-      // Approximate gap in meters (1 deg ≈ 111,000m at this latitude)
       const gapM = gapDeg * 111000;
-      // Transition time: assume ~20 km/h for maneuvering = 5.56 m/s
-      const transitionTimeS = Math.max(2, gapM / 5.56);
 
-      // Prepend stop position to route
-      const smoothCoords: [number, number][] = [stopPos, ...coords];
-      const smoothCumDist = [0, ...cumDist.map(d => d + gapM)];
-      const smoothCumTime = [0, ...cumTime.map(t => t + transitionTimeS)];
-      const smoothTotalDist = totalDist + gapM;
-      const smoothTotalTime = totalTime + transitionTimeS;
+      let transitionCoords: [number, number][] = [];
+      let transitionDistM = 0;
+
+      // Smart Backtracking: if gap is large (>10m) and we have route history, find path back
+      if (gapM > 10 && m && stopI > 0) {
+        // Search backwards in old route for a point close to firstRoutePoint
+        let bestBackI = -1;
+        let bestBackDist = Infinity;
+        // Search back up to 50 points (approx 500-1000m)
+        for (let k = stopI; k >= Math.max(0, stopI - 50); k--) {
+          const p = m.coords[k];
+          const d = Math.sqrt(Math.pow(p[0] - firstRoutePoint[0], 2) + Math.pow(p[1] - firstRoutePoint[1], 2)) * 111000;
+          if (d < 20) { // Found a point within 20m of the new start
+            bestBackI = k;
+            bestBackDist = d;
+            break;
+          }
+        }
+
+        if (bestBackI !== -1) {
+          // Found path back! Extract segment from stopI down to bestBackI
+          // This segment represents driving BACKWARDS to the intersection
+          const segment = m.coords.slice(bestBackI, stopI + 1).reverse();
+          transitionCoords = segment;
+          transitionDistM = (m.cumDist[stopI] - m.cumDist[bestBackI]);
+        } else {
+          // Fallback: straight line
+          transitionCoords = [stopPos, firstRoutePoint];
+          transitionDistM = gapM;
+        }
+      } else {
+        // Gap small or no history: simple step
+        transitionCoords = [stopPos];
+        transitionDistM = gapM;
+      }
+
+      // Transition time: assume ~30 km/h (8.33 m/s) for maneuvering provided it's not instant
+      const transitionTimeS = Math.max(2, transitionDistM / 8.33);
+
+      // Prepend transition (backtracking) coords
+      // Note: transitionCoords includes start (stopPos) and end (near firstRoutePoint)
+      // We start cumDist/Time accumulation from 0
+      const finalCoords = [...transitionCoords, ...coords];
+
+      // Rebuild arrays
+      const finalCumDist: number[] = [0];
+      const finalCumTime: number[] = [0];
+
+      // 1. Add transition segment metrics
+      for (let k = 1; k < transitionCoords.length; k++) {
+        const p0 = transitionCoords[k - 1];
+        const p1 = transitionCoords[k];
+        const d = Math.sqrt(Math.pow(p0[0] - p1[0], 2) + Math.pow(p0[1] - p1[1], 2)) * 111000;
+        finalCumDist.push(finalCumDist[finalCumDist.length - 1] + d);
+        // Time distr: total transition time spread by distance
+        finalCumTime.push(finalCumTime[finalCumTime.length - 1] + (d / transitionDistM) * transitionTimeS);
+      }
+      // Ensure the last point of transition sets the base for the new route
+      const baseDist = finalCumDist[finalCumDist.length - 1];
+      const baseTime = finalCumTime[finalCumTime.length - 1];
+
+      // 2. Add new route metrics
+      // cumDist[0] is 0, so we just add base + d
+      for (let k = 0; k < cumDist.length; k++) {
+        // coords[0] is redundant if we already have it from transition, but let's keep it simple
+        // actually, transition ends at 'near' firstRoutePoint.
+        // Let's just append the new route arrays offset by base
+        if (k === 0) continue; // skip 0 because it largely duplicates end of transition
+        finalCumDist.push(baseDist + cumDist[k]);
+        finalCumTime.push(baseTime + cumTime[k]);
+      }
+
+      // Fix up coords duplication
+      // transitionCoords last point might be slightly diff from coords[0], but close enough.
+      // We won't de-dupe strictly to avoid complex array slicing logic, the visual micro-jump <20m is fine.
+
+      const finalTotalDist = finalCumDist[finalCumDist.length - 1];
+      const finalTotalTime = finalCumTime[finalCumTime.length - 1];
 
       // QUEUE the reroute — don't apply it yet.
       // The animation tick will apply it when the ambulance reaches the roadblock.
       pendingRerouteRef.current = {
-        coords: smoothCoords,
-        cumDist: smoothCumDist,
-        cumTime: smoothCumTime,
-        totalDist: smoothTotalDist,
-        totalTime: smoothTotalTime,
+        coords: finalCoords,
+        cumDist: finalCumDist,
+        cumTime: finalCumTime,
+        totalDist: finalTotalDist,
+        totalTime: finalTotalTime,
         steps,
         algorithm: res.data.algorithm || 'dijkstra',
       };
@@ -940,6 +1055,35 @@ export default function LiveMap({
           SIM_SPEEDUP
         );
         onNavUpdateRef.current?.(finalNav);
+
+        // Check for waypoints logic
+        const sc = scenarioRef.current;
+        if (sc && sc.waypoints && activeWaypointIdx >= 0) {
+          // Arrived at a waypoint. Wait 5s then go to next.
+          setTimeout(() => {
+            // If this is MVA Trauma and we just finished the first leg (pickup at Markville), 
+            // update the scenario state to 'patientOnBoard' BEFORE routing to hospital.
+            if (sc.title && sc.title.includes('MVA') && activeWaypointIdx === 0 && onScenarioInject) {
+              onScenarioInject({ ...sc, patientOnBoard: true });
+            }
+
+            const nextIdx = activeWaypointIdx + 1;
+            if (nextIdx < sc.waypoints.length) {
+              // Go to next waypoint
+              setActiveWaypointIdx(nextIdx);
+              const nextPt = sc.waypoints[nextIdx];
+              setEndPoint(nextPt);
+              fetchRoute(nextPt, true);
+            } else {
+              // Done with waypoints, go to final End
+              setActiveWaypointIdx(-1); // -1 means final leg
+              const finalEnd = sc.end;
+              setEndPoint(finalEnd);
+              fetchRoute(finalEnd, true);
+            }
+          }, 5000); // 5s wait
+        }
+
         return;
       }
 
@@ -1042,7 +1186,7 @@ export default function LiveMap({
       if (animRef.current != null) cancelAnimationFrame(animRef.current);
       animRef.current = null;
     };
-  }, [routeCoordinates]);
+  }, [routeCoordinates, activeWaypointIdx, activeScenario]);
 
   return (
     <div className="w-full h-full relative">
