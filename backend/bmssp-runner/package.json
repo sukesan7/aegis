@@ -1,0 +1,8 @@
+{
+  "name": "aegis-bmsssp-runner",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "bm-sssp": "github:Braeniac/bm-sssp"
+  }
+}
