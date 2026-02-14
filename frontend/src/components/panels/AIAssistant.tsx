@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
 import axios from 'axios';
 
 interface Message {
@@ -7,7 +7,8 @@ interface Message {
   timestamp: string;
 }
 
-export default function AIAssistant({ className }: { className?: string }) {
+// 1. Wrap in forwardRef to allow App.tsx to 'hold' this component
+const AIAssistant = forwardRef(({ className }: { className?: string }, ref) => {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([
     { role: 'ai', text: 'AEGIS SYSTEM ONLINE. READY FOR TRIAGE SUPPORT.', timestamp: 'NOW' }
@@ -17,6 +18,26 @@ export default function AIAssistant({ className }: { className?: string }) {
   
   const scrollRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // 2. EXPOSE THE INJECTION COMMAND
+  useImperativeHandle(ref, () => ({
+    // Added 'shouldSpeak' parameter with a default of true
+    injectSystemMessage: async (text: string, shouldSpeak = true) => {
+      const aiMsg: Message = {
+        role: 'ai',
+        text: text,
+        timestamp: new Date().toLocaleTimeString([], { hour12: false })
+      };
+      setMessages(prev => [...prev, aiMsg]);
+      
+      // Only call ElevenLabs if we aren't using a local pre-recorded file
+      if (isVoiceEnabled && shouldSpeak) {
+        await handleVoicePlay(text);
+      } else {
+        console.log("AEGIS LOG: Scenario local audio active. ElevenLabs API bypassed.");
+      }
+    }
+  }));
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -39,7 +60,6 @@ export default function AIAssistant({ className }: { className?: string }) {
     if (!isVoiceEnabled) return;
 
     try {
-      // Cancel previous audio if it's still playing
       if (audioRef.current) {
         audioRef.current.pause();
         URL.revokeObjectURL(audioRef.current.src);
@@ -72,7 +92,6 @@ export default function AIAssistant({ className }: { className?: string }) {
     setIsLoading(true);
 
     try {
-      // 1. Text Generation
       const res = await axios.post('/api/ai/chat', { message: userMsg.text });
       const aiText = res.data.response;
 
@@ -84,7 +103,6 @@ export default function AIAssistant({ className }: { className?: string }) {
       
       setMessages(prev => [...prev, aiMsg]);
 
-      // 2. Audio Generation (Triggered only after text is rendered)
       if (isVoiceEnabled) {
         await handleVoicePlay(aiText);
       }
@@ -102,7 +120,6 @@ export default function AIAssistant({ className }: { className?: string }) {
 
   return (
     <div className={`bg-black/40 backdrop-blur-md border border-white/10 rounded-xl flex flex-col overflow-hidden ${className}`}>
-      {/* Header */}
       <div className="p-3 border-b border-white/10 bg-white/5 flex justify-between items-center">
         <div className="flex items-center gap-2">
           <h2 className="text-cyan-400 font-mono text-sm tracking-widest uppercase">
@@ -111,7 +128,6 @@ export default function AIAssistant({ className }: { className?: string }) {
           <div className={`w-2 h-2 rounded-full ${isLoading ? 'bg-yellow-400 animate-ping' : 'bg-green-500'}`} />
         </div>
         
-        {/* Voice Toggle Switch */}
         <button 
           onClick={() => setIsVoiceEnabled(!isVoiceEnabled)}
           className={`text-[10px] font-mono px-2 py-0.5 rounded border transition-colors ${
@@ -122,7 +138,6 @@ export default function AIAssistant({ className }: { className?: string }) {
         </button>
       </div>
 
-      {/* Chat History */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-4 font-mono text-xs scrollbar-thin scrollbar-thumb-cyan-900">
         {messages.map((m, i) => (
           <div key={i} className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
@@ -141,7 +156,6 @@ export default function AIAssistant({ className }: { className?: string }) {
         {isLoading && <div className="text-cyan-400 animate-pulse font-mono text-[10px] uppercase">Analyzing medical parameters...</div>}
       </div>
 
-      {/* Input Area */}
       <div className="p-2 border-t border-white/10 bg-black/50 flex gap-2">
         <input 
           type="text" 
@@ -166,4 +180,6 @@ export default function AIAssistant({ className }: { className?: string }) {
       </div>
     </div>
   );
-}
+});
+
+export default AIAssistant;
