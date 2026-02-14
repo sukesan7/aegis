@@ -121,12 +121,42 @@ function computeNavLive(meta: {
   };
 }
 
+// Scenario data for tactical injections (duplicated from ScenarioInjector for inline use)
+const SCENARIOS: Record<string, any> = {
+  CARDIAC_ARREST: {
+    title: 'CARDIAC ARREST // UNIT 992',
+    isRedAlert: true,
+    start: { lat: 43.858, lng: -79.54 },
+    end: { lat: 43.871, lng: -79.444 },
+    aiPrompt: 'URGENT: 65yo Male, Cardiac Arrest at Major Mackenzie and Jane. CPR in progress. Route to Mackenzie Health immediately via optimized Duan-Mao pivots.',
+    vitals: { hr: 0, bp: '0/0', o2: 45 },
+  },
+  MVA_TRAUMA: {
+    title: 'MVA TRAUMA // HWY 404',
+    isRedAlert: true,
+    start: { lat: 43.86, lng: -79.37 },
+    end: { lat: 43.722, lng: -79.376 },
+    aiPrompt: 'CRITICAL: Multi-vehicle accident on Hwy 404. Multiple trauma patients. Route to Sunnybrook Trauma Centre. Avoid 404 congestion using side-street pivots.',
+    vitals: { hr: 115, bp: '90/60', o2: 92 },
+  },
+  ROUTINE_PATROL: {
+    title: 'ROUTINE PATROL // ZONE B',
+    isRedAlert: false,
+    start: { lat: 43.864, lng: -79.4 },
+    end: { lat: 43.88, lng: -79.4 },
+    aiPrompt: 'Unit 992, proceed with routine patrol of Richmond Hill Zone B. Maintain low-latency uplink with mission control.',
+    vitals: { hr: 72, bp: '120/80', o2: 98 },
+  },
+};
+
 export default function LiveMap({
   activeScenario,
   onNavUpdate,
+  onScenarioInject,
 }: {
   activeScenario?: any;
   onNavUpdate?: (nav: NavLive) => void;
+  onScenarioInject?: (s: any) => void;
 }) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -732,33 +762,6 @@ export default function LiveMap({
           {routeError && <div className="text-[10px] text-red-300 font-mono mt-1 max-w-[300px]">{routeError}</div>}
         </div>
 
-        {/* Algorithm comparison stats */}
-        {showEtaPanel && (
-          <div className="bg-black/80 backdrop-blur-xl p-3 rounded-lg border border-cyan-500/30 min-w-[280px]">
-            <div className="text-[10px] text-cyan-400 font-mono font-bold uppercase tracking-wider mb-2">Algorithm Comparison</div>
-            {isFetchingStats ? (
-              <div className="text-[9px] text-gray-400 font-mono animate-pulse">Fetching both routes...</div>
-            ) : (
-              <div className="grid grid-cols-3 gap-1 text-[9px] font-mono">
-                <div className="text-gray-500"></div>
-                <div className="text-cyan-300 text-center">DIJKSTRA</div>
-                <div className="text-purple-300 text-center">DUAN-MAO</div>
-
-                <div className="text-gray-500">EXEC</div>
-                <div className="text-cyan-200 text-center">{algoStats.dijkstra ? `${algoStats.dijkstra.exec_ms.toFixed(0)}ms` : '—'}</div>
-                <div className="text-purple-200 text-center">{algoStats.bmsssp ? `${algoStats.bmsssp.exec_ms.toFixed(0)}ms` : '—'}</div>
-
-                <div className="text-gray-500">ETA</div>
-                <div className="text-cyan-200 text-center">{algoStats.dijkstra ? formatEta(algoStats.dijkstra.eta_s) : '—'}</div>
-                <div className="text-purple-200 text-center">{algoStats.bmsssp ? formatEta(algoStats.bmsssp.eta_s) : '—'}</div>
-
-                <div className="text-gray-500">DIST</div>
-                <div className="text-cyan-200 text-center">{algoStats.dijkstra ? `${(algoStats.dijkstra.dist_m / 1000).toFixed(2)}km` : '—'}</div>
-                <div className="text-purple-200 text-center">{algoStats.bmsssp ? `${(algoStats.bmsssp.dist_m / 1000).toFixed(2)}km` : '—'}</div>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Destination input with autocomplete */}
@@ -836,21 +839,77 @@ export default function LiveMap({
               ✕
             </button>
           )}
-          <button
-            onClick={() => {
-              const next = !showEtaPanel;
-              setShowEtaPanel(next);
-              if (next) fetchBothAlgoStats();
-            }}
-            disabled={isRouting}
-            className={`px-2 py-1 rounded border text-xs font-mono transition-colors ${showEtaPanel
-              ? 'bg-cyan-500/30 border-cyan-400/50 text-cyan-300'
-              : 'border-white/10 text-gray-400 hover:text-cyan-300'
-              } ${isRouting ? 'opacity-50 cursor-not-allowed' : ''}`}
-          >
-            Dev
-          </button>
+
         </div>
+      </div>
+
+      {/* Bottom-left Dev panel */}
+      <div className="absolute bottom-4 left-4 z-50 flex flex-col items-start gap-2">
+        {showEtaPanel && (
+          <div className="bg-black/90 backdrop-blur-xl p-4 rounded-lg border border-cyan-500/30 min-w-[300px] flex flex-col gap-3 shadow-[0_0_30px_rgba(0,240,255,0.1)]">
+            {/* Algorithm Comparison */}
+            <div>
+              <div className="text-[10px] text-cyan-400 font-mono font-bold uppercase tracking-wider mb-2">Algorithm Comparison</div>
+              {isFetchingStats ? (
+                <div className="text-[9px] text-gray-400 font-mono animate-pulse">Fetching both routes...</div>
+              ) : (
+                <div className="grid grid-cols-3 gap-1 text-[9px] font-mono">
+                  <div className="text-gray-500"></div>
+                  <div className="text-cyan-300 text-center">DIJKSTRA</div>
+                  <div className="text-purple-300 text-center">DUAN-MAO</div>
+
+                  <div className="text-gray-500">EXEC</div>
+                  <div className="text-cyan-200 text-center">{algoStats.dijkstra ? `${algoStats.dijkstra.exec_ms.toFixed(0)}ms` : '—'}</div>
+                  <div className="text-purple-200 text-center">{algoStats.bmsssp ? `${algoStats.bmsssp.exec_ms.toFixed(0)}ms` : '—'}</div>
+
+                  <div className="text-gray-500">ETA</div>
+                  <div className="text-cyan-200 text-center">{algoStats.dijkstra ? formatEta(algoStats.dijkstra.eta_s) : '—'}</div>
+                  <div className="text-purple-200 text-center">{algoStats.bmsssp ? formatEta(algoStats.bmsssp.eta_s) : '—'}</div>
+
+                  <div className="text-gray-500">DIST</div>
+                  <div className="text-cyan-200 text-center">{algoStats.dijkstra ? `${(algoStats.dijkstra.dist_m / 1000).toFixed(2)}km` : '—'}</div>
+                  <div className="text-purple-200 text-center">{algoStats.bmsssp ? `${(algoStats.bmsssp.dist_m / 1000).toFixed(2)}km` : '—'}</div>
+                </div>
+              )}
+            </div>
+
+            {/* Divider */}
+            <div className="border-t border-white/10" />
+
+            {/* Tactical Injections */}
+            <div>
+              <div className="text-[10px] text-cyan-500/60 font-mono font-bold uppercase tracking-wider mb-2">Tactical Injections</div>
+              <div className="flex flex-col gap-1.5">
+                {Object.entries(SCENARIOS).map(([key, data]) => (
+                  <button
+                    key={key}
+                    onClick={() => onScenarioInject?.(data)}
+                    className={`w-full text-left px-3 py-2 text-[10px] font-mono font-bold rounded-lg border transition-all duration-300 hover:scale-[1.02] active:scale-95 ${data.isRedAlert
+                        ? 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500 hover:text-white shadow-[0_0_15px_rgba(239,68,68,0.15)]'
+                        : 'border-cyan-500/40 text-cyan-400 bg-cyan-500/5 hover:bg-cyan-500 hover:text-white shadow-[0_0_15px_rgba(0,240,255,0.15)]'
+                      }`}
+                  >
+                    {key.replace(/_/g, ' ')}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <button
+          onClick={() => {
+            const next = !showEtaPanel;
+            setShowEtaPanel(next);
+            if (next) fetchBothAlgoStats();
+          }}
+          className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold transition-all duration-300 ${showEtaPanel
+            ? 'bg-cyan-500/30 border-cyan-400/50 text-cyan-300 shadow-[0_0_15px_rgba(0,240,255,0.2)]'
+            : 'bg-black/80 backdrop-blur-xl border-white/10 text-gray-400 hover:text-cyan-300 hover:border-cyan-500/30'
+            }`}
+        >
+          {showEtaPanel ? '✕ DEV' : '⚙ DEV'}
+        </button>
       </div>
     </div>
   );

@@ -4,7 +4,7 @@ import AIAssistant from './components/panels/AIAssistant';
 import PatientVitals from './components/panels/PatientVitals';
 import Navigation from './components/panels/Navigation';
 import DispatchFeed from './components/panels/DispatchFeed';
-import ScenarioInjector from './components/dev/ScenarioInjector';
+
 
 // --- SUB-COMPONENT: UPGRADED EQUIPMENT PANEL ---
 const EquipmentPanel = ({ forceOpen, isRedAlert }: { forceOpen?: boolean, isRedAlert?: boolean }) => {
@@ -12,7 +12,7 @@ const EquipmentPanel = ({ forceOpen, isRedAlert }: { forceOpen?: boolean, isRedA
   useEffect(() => { if (forceOpen) setIsOpen(true); }, [forceOpen]);
 
   return (
-    <div 
+    <div
       onClick={() => setIsOpen(!isOpen)}
       className={`bg-black/60 backdrop-blur-xl border rounded-xl transition-all duration-500 ease-in-out cursor-pointer overflow-hidden flex flex-col 
         ${isOpen ? 'h-80' : 'h-12 hover:bg-white/5'} 
@@ -82,10 +82,10 @@ function App() {
   const handleScenarioInject = (scenario: any) => {
     setIsRedAlert(scenario.isRedAlert);
     setActiveScenario(scenario);
-    
+
     // 1. DETERMINE FILE NAME
-    const fileName = scenario.title.includes("ARREST") ? 'arrest.mp3' : 
-                     scenario.title.includes("TRAUMA") ? 'trauma.mp3' : 'routine.mp3';
+    const fileName = scenario.title.includes("ARREST") ? 'arrest.mp3' :
+      scenario.title.includes("TRAUMA") ? 'trauma.mp3' : 'routine.mp3';
 
     // 2. CONSTRUCT WEB PATH
     const audioPath = `/audio/${fileName}`;
@@ -105,13 +105,13 @@ function App() {
 
     // 4. INJECT MESSAGE INTO AI BRAIN
     if (aiRef.current) {
-      aiRef.current.injectSystemMessage(scenario.aiPrompt, false); 
+      aiRef.current.injectSystemMessage(scenario.aiPrompt, false);
     }
   };
 
   return (
     <div className={`w-screen h-screen overflow-hidden flex flex-col transition-all duration-700 ${isRedAlert ? 'bg-red-950/20' : 'bg-[#050505]'}`}>
-      
+
       <header className="h-14 shrink-0 border-b border-white/10 bg-black/50 backdrop-blur-lg flex items-center justify-between px-6 z-50">
         <div className="flex items-center gap-4">
           <h1 className="text-2xl font-bold tracking-tighter text-white uppercase">
@@ -125,41 +125,40 @@ function App() {
         </div>
 
         <div className="flex items-center gap-6">
-           <div className="text-right">
-             <div className="text-white font-mono text-sm">{time.toLocaleTimeString([], { hour12: false })}</div>
-             <div className="text-gray-500 text-[10px] font-mono uppercase">{time.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</div>
-           </div>
-           <button 
-             onClick={() => {
-               // PRIME AUDIO CONTEXT
-               const silence = new Audio();
-               silence.play().catch(() => {});
-               setIsRedAlert(!isRedAlert);
-               setAudioError(false);
-             }}
-             className={`px-4 py-1 rounded border font-mono text-xs transition-all ${isRedAlert ? 'bg-red-600 text-white border-red-500 animate-pulse shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-transparent text-gray-400 border-gray-700 hover:border-white'}`}
-           >
-             {isRedAlert ? '⚠ CRITICAL TRAUMA' : 'ROUTINE PATROL'}
-           </button>
+          <div className="text-right">
+            <div className="text-white font-mono text-sm">{time.toLocaleTimeString([], { hour12: false })}</div>
+            <div className="text-gray-500 text-[10px] font-mono uppercase">{time.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</div>
+          </div>
+          <button
+            onClick={() => {
+              // PRIME AUDIO CONTEXT
+              const silence = new Audio();
+              silence.play().catch(() => { });
+              setIsRedAlert(!isRedAlert);
+              setAudioError(false);
+            }}
+            className={`px-4 py-1 rounded border font-mono text-xs transition-all ${isRedAlert ? 'bg-red-600 text-white border-red-500 animate-pulse shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-transparent text-gray-400 border-gray-700 hover:border-white'}`}
+          >
+            {isRedAlert ? '⚠ CRITICAL TRAUMA' : 'ROUTINE PATROL'}
+          </button>
         </div>
       </header>
 
       <main className="flex-1 min-h-0 p-4 grid grid-cols-12 gap-4 relative z-10">
         <div className="col-span-3 flex flex-col gap-4 h-full min-h-0">
           <DispatchFeed className="h-48 shrink-0" />
-          <AIAssistant 
-            ref={aiRef} 
-            className={`flex-1 min-h-0 transition-all duration-500 border-cyan-500/30 shadow-[0_0_40px_rgba(0,240,255,0.2)] ${isRedAlert ? 'shadow-[0_0_60px_rgba(239,68,68,0.3)]' : ''}`} 
+          <AIAssistant
+            ref={aiRef}
+            className={`flex-1 min-h-0 transition-all duration-500 border-cyan-500/30 shadow-[0_0_40px_rgba(0,240,255,0.2)] ${isRedAlert ? 'shadow-[0_0_60px_rgba(239,68,68,0.3)]' : ''}`}
           />
           <EquipmentPanel forceOpen={activeScenario?.isRedAlert} isRedAlert={isRedAlert} />
         </div>
 
         <div className="col-span-6 h-full relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-black/20">
-           {/* SYNC: Passing activeScenario to Map for 3D Driver View */}
-           <LiveMap activeScenario={activeScenario} onNavUpdate={setNavData} />
-           <ScenarioInjector onInject={handleScenarioInject} />
-           <div className="absolute top-0 left-0 w-full h-24 bg-gradient-to-b from-black/80 to-transparent pointer-events-none" />
-           <div className="absolute bottom-0 left-0 w-full h-24 bg-gradient-to-t from-black/80 to-transparent pointer-events-none" />
+          {/* SYNC: Passing activeScenario to Map for 3D Driver View */}
+          <LiveMap activeScenario={activeScenario} onNavUpdate={setNavData} onScenarioInject={handleScenarioInject} />
+          <div className="absolute top-0 left-0 w-full h-24 bg-gradient-to-b from-black/80 to-transparent pointer-events-none" />
+          <div className="absolute bottom-0 left-0 w-full h-24 bg-gradient-to-t from-black/80 to-transparent pointer-events-none" />
         </div>
 
         <div className="col-span-3 flex flex-col gap-4 h-full min-h-0">
@@ -169,8 +168,8 @@ function App() {
         </div>
       </main>
 
-      <div className="absolute inset-0 z-0 pointer-events-none opacity-5" 
-           style={{ backgroundImage: 'linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px)', backgroundSize: '40px 40px' }}>
+      <div className="absolute inset-0 z-0 pointer-events-none opacity-5"
+        style={{ backgroundImage: 'linear-gradient(#333 1px, transparent 1px), linear-gradient(90deg, #333 1px, transparent 1px)', backgroundSize: '40px 40px' }}>
       </div>
     </div>
   );

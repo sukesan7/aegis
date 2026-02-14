@@ -77,9 +77,6 @@ export default function Navigation({
           </div>
         </div>
 
-        <div className="text-[9px] text-cyan-900 bg-cyan-400/10 border border-cyan-400/20 rounded px-2 py-1 text-center font-mono uppercase">
-          Algo: {algo}
-        </div>
       </div>
     </div>
   );
