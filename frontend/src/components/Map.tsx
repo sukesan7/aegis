@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import axios from 'axios';
@@ -130,13 +130,22 @@ export default function LiveMap({
   const [currentPos, setCurrentPos] = useState<[number, number] | null>(null);
 
   // Live routing inputs
-  const [destQuery, setDestQuery] = useState('Mackenzie Health Hospital');
-  const [endPoint, setEndPoint] = useState<LatLng>({ lat: 43.8800, lng: -79.2500 });
+  const [destQuery, setDestQuery] = useState('');
+  const [endPoint, setEndPoint] = useState<LatLng | null>(null);
   const [isFollowing, setIsFollowing] = useState(true);
 
   // UI feedback
   const [isRouting, setIsRouting] = useState(false);
   const [routeError, setRouteError] = useState<string | null>(null);
+  const [routeReady, setRouteReady] = useState(false);  // route loaded, waiting for GO
+  const [simRunning, setSimRunning] = useState(false);  // animation is in progress
+
+  // Autocomplete
+  type Suggestion = { lat: number; lng: number; display_name: string };
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Animation refs
   const animRef = useRef<number | null>(null);
@@ -144,6 +153,7 @@ export default function LiveMap({
   const followRef = useRef<boolean>(true);
   const scenarioRef = useRef<any>(null);
   const onNavUpdateRef = useRef<typeof onNavUpdate>(onNavUpdate);
+  const routeAbortRef = useRef<AbortController | null>(null);
 
   // Route meta ref (provided by backend)
   const routeRef = useRef<{
@@ -172,7 +182,7 @@ export default function LiveMap({
     map.current = new maplibregl.Map({
       container: mapContainer.current,
       style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-      center: [-79.44, 43.86],
+      center: [-79.2578, 43.8334],  // Markham Stouffville Hospital
       zoom: 16,
       pitch: 70,
     });
@@ -197,7 +207,7 @@ export default function LiveMap({
       "></div>
     `;
 
-    ambulanceMarker.current = new maplibregl.Marker(el).setLngLat([-79.44, 43.86]).addTo(map.current);
+    ambulanceMarker.current = new maplibregl.Marker(el).setLngLat([-79.2578, 43.8334]).addTo(map.current);  // Markham Stouffville Hospital
 
     map.current.on('load', () => {
       map.current?.addSource('aegis-route', {
@@ -213,8 +223,7 @@ export default function LiveMap({
         paint: { 'line-width': 6, 'line-color': '#00f0ff', 'line-opacity': 0.85 },
       });
 
-      // Start routing immediately — don't wait for 3D buildings
-      fetchRoute();
+      // Don't auto-route on load — wait for user to search a destination
 
       // Defer 3D buildings so they don't block the initial animation
       setTimeout(() => {
@@ -250,34 +259,46 @@ export default function LiveMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-route on scenario change
+  // Re-route on scenario change (auto-start for dispatch scenarios)
   useEffect(() => {
     if (!map.current?.loaded()) return;
 
     if (activeScenario?.location) {
       const end = { lat: activeScenario.location.lat, lng: activeScenario.location.lng };
       setEndPoint(end);
-      fetchRoute(end);
+      fetchRoute(end, true);  // auto-start animation for dispatch scenarios
       return;
     }
 
-    fetchRoute();
+    fetchRoute(undefined, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScenario]);
 
-  const fetchRoute = async (endOverride?: LatLng) => {
+  const fetchRoute = async (endOverride?: LatLng, autoStart = false) => {
     try {
       setIsRouting(true);
       setRouteError(null);
+      setRouteReady(false);
+
+      // Stop any running animation
+      if (animRef.current != null) {
+        cancelAnimationFrame(animRef.current);
+        animRef.current = null;
+      }
 
       const cur = ambulanceMarker.current?.getLngLat();
-      const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: 43.8561, lng: -79.5570 };
+      const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: 43.8334, lng: -79.2578 };  // Markham Stouffville Hospital
+
+      // Create abort controller for this route request
+      if (routeAbortRef.current) routeAbortRef.current.abort();
+      const controller = new AbortController();
+      routeAbortRef.current = controller;
 
       const res = await api.post<RouteResponse>('/api/algo/calculate', {
         start,
         end: endOverride ?? endPoint,
         scenario_type: activeScenario?.title || 'ROUTINE',
-      });
+      }, { signal: controller.signal });
 
       const coords = (res.data?.path_coordinates || []) as [number, number][];
       const cumDist = (res.data?.cum_distance_m || []) as number[];
@@ -298,8 +319,6 @@ export default function LiveMap({
         ambulanceMarker.current.setLngLat(coords[0]);
       }
 
-      setRouteCoordinates(coords);
-
       routeRef.current = {
         coords,
         cumDist,
@@ -310,7 +329,7 @@ export default function LiveMap({
         algorithm: res.data.algorithm,
       };
 
-      // Update route line
+      // Draw route line on map (but don't start animation yet)
       const geojson = {
         type: 'FeatureCollection',
         features: [
@@ -324,10 +343,10 @@ export default function LiveMap({
       const src = map.current?.getSource('aegis-route') as any;
       if (src) src.setData(geojson);
 
-      // Immediately center the camera
+      // Center camera on the route
       map.current?.jumpTo({ center: (snapped || coords[0]) as any });
 
-      // Push an initial nav state immediately
+      // Push an initial nav state (shows distance/ETA in HUD before animation starts)
       const simSpeedup = 8;
       const initialNav = computeNavLive(
         { totalDist, totalTime, steps, algorithm: res.data.algorithm },
@@ -336,6 +355,13 @@ export default function LiveMap({
         simSpeedup
       );
       onNavUpdateRef.current?.(initialNav);
+
+      // If autoStart (e.g. dispatch scenario), begin animation immediately
+      if (autoStart) {
+        setRouteCoordinates(coords);
+      } else {
+        setRouteReady(true);  // enable GO button, wait for user click
+      }
     } catch (e: any) {
       console.error('Route fetch failed', e);
       setRouteError(
@@ -348,25 +374,114 @@ export default function LiveMap({
     }
   };
 
+  const startAnimation = () => {
+    if (!routeRef.current) return;
+    setRouteReady(false);
+    setSimRunning(true);
+    setRouteCoordinates(routeRef.current.coords);  // triggers the animation useEffect
+  };
+
+  const cancelRoute = () => {
+    // Abort any in-flight route calculation
+    if (routeAbortRef.current) {
+      routeAbortRef.current.abort();
+      routeAbortRef.current = null;
+    }
+
+    // Stop animation
+    if (animRef.current != null) {
+      cancelAnimationFrame(animRef.current);
+      animRef.current = null;
+    }
+
+    // Clear all route state
+    setRouteCoordinates([]);
+    setRouteReady(false);
+    setSimRunning(false);
+    setIsRouting(false);
+    setDestQuery('');
+    setEndPoint(null);
+    setRouteError(null);
+    setSuggestions([]);
+    setShowSuggestions(false);
+    routeRef.current = null;
+
+    // Clear the route line from the map
+    const src = map.current?.getSource('aegis-route') as any;
+    if (src) src.setData({ type: 'FeatureCollection', features: [] });
+  };
+
   const handleGeocode = async () => {
     if (!destQuery.trim()) return;
     try {
       setIsRouting(true);
       setRouteError(null);
 
-      const res = await api.get('/api/algo/geocode', { params: { q: destQuery.trim() } });
-      const end = { lat: res.data.lat, lng: res.data.lng };
+      // Use autocomplete endpoint (York Region scoped) and take the first result
+      const res = await api.get('/api/algo/autocomplete', { params: { q: destQuery.trim() } });
+      const results = res.data?.results || [];
+      if (!results.length) {
+        setRouteError('No addresses found in York Region. Try a more specific query.');
+        setIsRouting(false);
+        return;
+      }
+      const top = results[0];
+      setDestQuery(top.display_name);
+      const end = { lat: top.lat, lng: top.lng };
       setEndPoint(end);
-      await fetchRoute(end);
+      await fetchRoute(end);  // loads route, enables GO
     } catch (e: any) {
       console.error('Geocode failed', e);
       setRouteError(
         e?.response?.data?.detail ||
         e?.message ||
-        'Geocode failed. Try a simpler query like "Mackenzie Health" or "Markham Stouffville Hospital".'
+        'Geocode failed. Try a more specific address in York Region.'
       );
       setIsRouting(false);
     }
+  };
+
+  const fetchSuggestions = useCallback(async (query: string) => {
+    if (query.trim().length < 3) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    // Cancel any previous in-flight autocomplete request
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await api.get('/api/algo/autocomplete', {
+        params: { q: query.trim() },
+        signal: controller.signal,
+      });
+      const results = res.data?.results || [];
+      setSuggestions(results);
+      setShowSuggestions(results.length > 0);
+    } catch (err: any) {
+      // Ignore aborted requests (user kept typing)
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') return;
+      setSuggestions([]);
+      setShowSuggestions(false);
+    }
+  }, []);
+
+  const onInputChange = (value: string) => {
+    setDestQuery(value);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    // 1100ms debounce — Nominatim enforces max 1 request/second
+    debounceRef.current = setTimeout(() => fetchSuggestions(value), 1100);
+  };
+
+  const handleSelectSuggestion = async (s: Suggestion) => {
+    setDestQuery(s.display_name);
+    setSuggestions([]);
+    setShowSuggestions(false);
+    const end = { lat: s.lat, lng: s.lng };
+    setEndPoint(end);
+    await fetchRoute(end);  // loads route, enables GO — does NOT start animation
   };
 
   // Realistic GPS-like animation: drive the marker using backend's cum_time_s (and a speedup factor for demo).
@@ -386,6 +501,7 @@ export default function LiveMap({
 
     // start at first point
     setCurrentPos(meta.coords[0]);
+    setSimRunning(true);
 
     const SIM_SPEEDUP = 8; // demo speed multiplier: increases how fast the vehicle progresses along the real route timebase
 
@@ -401,6 +517,7 @@ export default function LiveMap({
         const end = m.coords[m.coords.length - 1];
         ambulanceMarker.current.setLngLat(end);
         setCurrentPos(end);
+        setSimRunning(false);
         // final nav push
         const finalNav = computeNavLive(
           { totalDist: m.totalDist, totalTime, steps: m.steps, algorithm: m.algorithm },
@@ -502,34 +619,82 @@ export default function LiveMap({
         {routeError && <div className="text-[10px] text-red-300 font-mono mt-1 max-w-[300px]">{routeError}</div>}
       </div>
 
-      {/* Destination input (demo) */}
-      <div className="absolute top-4 right-4 bg-black/80 backdrop-blur-xl p-3 rounded-lg border border-white/10 flex gap-2 items-center">
-        <input
-          value={destQuery}
-          onChange={(e) => setDestQuery(e.target.value)}
-          placeholder="Enter destination (hospital / address)"
-          className="bg-black/40 border border-white/10 rounded px-2 py-1 text-xs text-white w-56 outline-none"
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') handleGeocode();
-          }}
-        />
-        <button
-          onClick={handleGeocode}
-          disabled={isRouting}
-          className={`px-3 py-1 rounded border text-xs font-mono ${isRouting
-            ? 'bg-white/5 border-white/10 text-gray-400 cursor-not-allowed'
-            : 'bg-cyan-500/20 border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/30'
-            }`}
-        >
-          {isRouting ? '...' : 'GO'}
-        </button>
-        <button
-          onClick={() => setIsFollowing((v) => !v)}
-          className={`px-2 py-1 rounded border text-xs font-mono ${isFollowing ? 'border-cyan-400/50 text-cyan-300' : 'border-white/10 text-gray-400'
-            }`}
-        >
-          {isFollowing ? 'FOLLOW' : 'FREE'}
-        </button>
+      {/* Destination input with autocomplete */}
+      <div className="absolute top-4 right-4 z-50">
+        <div className="bg-black/80 backdrop-blur-xl p-3 rounded-lg border border-white/10 flex gap-2 items-center">
+          <div className="relative">
+            <input
+              value={destQuery}
+              onChange={(e) => onInputChange(e.target.value)}
+              placeholder="Enter address in York Region"
+              className="bg-black/40 border border-white/10 rounded px-2 py-1 text-xs text-white w-64 outline-none focus:border-cyan-500/50 transition-colors"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  setShowSuggestions(false);
+                  // If route already loaded, Enter starts animation
+                  if (routeReady) { startAnimation(); return; }
+                  handleGeocode();
+                }
+                if (e.key === 'Escape') setShowSuggestions(false);
+              }}
+              onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+              onBlur={() => { setTimeout(() => setShowSuggestions(false), 200); }}
+            />
+
+            {/* Autocomplete dropdown */}
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-black/95 backdrop-blur-xl border border-cyan-500/30 rounded-lg overflow-hidden shadow-[0_8px_32px_rgba(0,240,255,0.15)]">
+                {suggestions.map((s, i) => (
+                  <button
+                    key={i}
+                    className="w-full text-left px-3 py-2 text-[11px] text-gray-300 hover:bg-cyan-500/15 hover:text-cyan-200 transition-colors border-b border-white/5 last:border-b-0 flex items-start gap-2"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => handleSelectSuggestion(s)}
+                  >
+                    <span className="text-cyan-500 mt-px shrink-0">📍</span>
+                    <span className="line-clamp-2 leading-tight">{s.display_name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => {
+              setShowSuggestions(false);
+              if (routeReady) {
+                startAnimation();
+              } else {
+                handleGeocode();
+              }
+            }}
+            disabled={isRouting || simRunning}
+            className={`px-3 py-1 rounded border text-xs font-mono ${isRouting || simRunning
+                ? 'bg-white/5 border-white/10 text-gray-400 cursor-not-allowed'
+                : routeReady
+                  ? 'bg-green-500/20 border-green-400/40 text-green-300 hover:bg-green-500/30 animate-pulse'
+                  : 'bg-cyan-500/20 border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/30'
+              }`}
+          >
+            {isRouting ? '...' : simRunning ? 'MOVING' : routeReady ? '▶ GO' : 'GO'}
+          </button>
+          <button
+            onClick={() => setIsFollowing((v) => !v)}
+            className={`px-2 py-1 rounded border text-xs font-mono ${isFollowing ? 'border-cyan-400/50 text-cyan-300' : 'border-white/10 text-gray-400'
+              }`}
+          >
+            {isFollowing ? 'FOLLOW' : 'FREE'}
+          </button>
+          {(simRunning || isRouting) && (
+            <button
+              onClick={cancelRoute}
+              className="px-2 py-1 rounded border text-xs font-mono bg-red-500/20 border-red-400/40 text-red-300 hover:bg-red-500/30 transition-colors"
+              title="Cancel route"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
