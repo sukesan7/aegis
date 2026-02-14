@@ -5,6 +5,33 @@ import PatientVitals from './components/panels/PatientVitals';
 import Navigation from './components/panels/Navigation';
 import DispatchFeed from './components/panels/DispatchFeed';
 
+// Error Boundary to catch LiveMap crashes
+class MapErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('LiveMap crashed:', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="w-full h-full flex flex-col items-center justify-center bg-red-950/50 text-white font-mono p-4">
+          <div className="text-red-400 text-xl mb-2">⚠ MAP CRASH</div>
+          <div className="text-sm text-gray-300 max-w-md break-all">{this.state.error?.message}</div>
+          <div className="text-xs text-gray-500 mt-2 max-w-md break-all whitespace-pre-wrap">{this.state.error?.stack?.slice(0, 500)}</div>
+          <button onClick={() => this.setState({ hasError: false, error: null })} className="mt-4 px-3 py-1 bg-cyan-600 rounded text-sm">Retry</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 
 // --- SUB-COMPONENT: UPGRADED EQUIPMENT PANEL ---
 const EquipmentPanel = ({ forceOpen, isRedAlert }: { forceOpen?: boolean, isRedAlert?: boolean }) => {
@@ -156,7 +183,9 @@ function App() {
 
         <div className="col-span-6 h-full relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-black/20">
           {/* SYNC: Passing activeScenario to Map for 3D Driver View */}
-          <LiveMap activeScenario={activeScenario} onNavUpdate={setNavData} onScenarioInject={handleScenarioInject} />
+          <MapErrorBoundary>
+            <LiveMap activeScenario={activeScenario} onNavUpdate={setNavData} onScenarioInject={handleScenarioInject} />
+          </MapErrorBoundary>
           <div className="absolute top-0 left-0 w-full h-24 bg-gradient-to-b from-black/80 to-transparent pointer-events-none" />
           <div className="absolute bottom-0 left-0 w-full h-24 bg-gradient-to-t from-black/80 to-transparent pointer-events-none" />
         </div>

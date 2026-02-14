@@ -52,6 +52,7 @@ class RouteRequest(BaseModel):
     end: Coordinate
     scenario_type: str = "ROUTINE"  # ROUTINE / TRAUMA / CARDIAC ARREST etc.
     algorithm: str = "dijkstra"     # "dijkstra" or "bmsssp"
+    blocked_edges: Optional[List[List[float]]] = None  # [[lat, lng], ...] nodes to block
 
 
 class PivotNode(BaseModel):
@@ -211,6 +212,23 @@ def find_duan_mao_pivots(G: nx.MultiDiGraph, path_nodes: List[int], k: int = 2) 
             if len(pivots) >= k:
                 break
     return pivots
+
+
+def _remove_blocked_edges(G: nx.MultiDiGraph, blocked_points: List[List[float]], radius_m: float = 80.0) -> nx.MultiDiGraph:
+    """Return a copy of G with edges near blocked_points removed."""
+    G2 = G.copy()
+    edges_to_remove = set()
+    for blat, blng in blocked_points:
+        bp = (blng, blat)  # haversine expects (lng, lat)
+        for u, v, k, data in G2.edges(keys=True, data=True):
+            mid_lng = (G2.nodes[u]["x"] + G2.nodes[v]["x"]) / 2.0
+            mid_lat = (G2.nodes[u]["y"] + G2.nodes[v]["y"]) / 2.0
+            if _haversine_m(bp, (mid_lng, mid_lat)) < radius_m:
+                edges_to_remove.add((u, v, k))
+    for u, v, k in edges_to_remove:
+        if G2.has_edge(u, v, k):
+            G2.remove_edge(u, v, k)
+    return G2
 
 
 def _bbox_for_route(start: Coordinate, end: Coordinate, pad_deg: float = 0.02):
@@ -668,6 +686,10 @@ async def calculate_route(req: RouteRequest):
         north, south, east, west = _bbox_for_route(req.start, req.end)
         north, south, east, west = _round_bbox(north, south, east, west)
         G = _load_graph_cached(north, south, east, west)
+
+        # 1b) Apply road closures (blocked edges) if provided
+        if req.blocked_edges:
+            G = _remove_blocked_edges(G, req.blocked_edges)
 
         # 2) Snap to nearest drivable nodes (requires scikit-learn for unprojected graphs)
         orig_node = ox.nearest_nodes(G, X=req.start.lng, Y=req.start.lat)

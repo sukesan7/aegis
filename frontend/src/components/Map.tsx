@@ -2,6 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import axios from 'axios';
+import AlgoRaceMiniMap from './AlgoRaceMiniMap';
 
 type LatLng = { lat: number; lng: number };
 
@@ -130,6 +131,11 @@ const SCENARIOS: Record<string, any> = {
     end: { lat: 43.871, lng: -79.444 },
     aiPrompt: 'URGENT: 65yo Male, Cardiac Arrest at Major Mackenzie and Jane. CPR in progress. Route to Mackenzie Health immediately via optimized Duan-Mao pivots.',
     vitals: { hr: 0, bp: '0/0', o2: 45 },
+    // Road closures along the direct path — forces rerouting
+    roadClosures: [
+      [43.862, -79.50],   // Major Mackenzie & Weston Rd
+      [43.865, -79.48],   // Major Mackenzie & Pine Valley Dr
+    ],
   },
   MVA_TRAUMA: {
     title: 'MVA TRAUMA // HWY 404',
@@ -138,6 +144,11 @@ const SCENARIOS: Record<string, any> = {
     end: { lat: 43.722, lng: -79.376 },
     aiPrompt: 'CRITICAL: Multi-vehicle accident on Hwy 404. Multiple trauma patients. Route to Sunnybrook Trauma Centre. Avoid 404 congestion using side-street pivots.',
     vitals: { hr: 115, bp: '90/60', o2: 92 },
+    // Road closures along HWY 404 corridor — forces side-street routing
+    roadClosures: [
+      [43.82, -79.38],    // Hwy 404 near Sheppard
+      [43.79, -79.38],    // Hwy 404 near Finch
+    ],
   },
   ROUTINE_PATROL: {
     title: 'ROUTINE PATROL // ZONE B',
@@ -182,6 +193,10 @@ export default function LiveMap({
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeReady, setRouteReady] = useState(false);  // route loaded, waiting for GO
   const [simRunning, setSimRunning] = useState(false);   // animation is in progress
+
+  // Algorithm Race Mini-Map
+  const [algoRaceData, setAlgoRaceData] = useState<any>(null);
+  const [showAlgoRace, setShowAlgoRace] = useState(false);
 
   // Autocomplete
   type Suggestion = { lat: number; lng: number; display_name: string };
@@ -279,6 +294,37 @@ export default function LiveMap({
         paint: { 'line-width': 6, 'line-color': '#00f0ff', 'line-opacity': 0.85 },
       });
 
+      // Road closure markers source
+      map.current?.addSource('road-closures', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      map.current?.addLayer({
+        id: 'road-closures-circle',
+        type: 'circle',
+        source: 'road-closures',
+        paint: {
+          'circle-radius': 10,
+          'circle-color': '#ff4444',
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 2.5,
+          'circle-opacity': 0.9,
+        },
+      });
+      map.current?.addLayer({
+        id: 'road-closures-label',
+        type: 'symbol',
+        source: 'road-closures',
+        layout: {
+          'text-field': '✕',
+          'text-size': 14,
+          'text-allow-overlap': true,
+        },
+        paint: {
+          'text-color': '#ffffff',
+        },
+      });
+
       // Don't auto-route on load — wait for user to search a destination
 
       // Defer 3D buildings so they don't block the initial animation
@@ -319,18 +365,41 @@ export default function LiveMap({
   useEffect(() => {
     if (!map.current?.loaded()) return;
 
-    if (activeScenario?.location) {
-      const end = { lat: activeScenario.location.lat, lng: activeScenario.location.lng };
+    // Draw road closure markers on main map
+    const closures = activeScenario?.roadClosures || [];
+    const closureSrc = map.current?.getSource('road-closures') as any;
+    if (closureSrc) {
+      const features = closures.map(([lat, lng]: [number, number]) => ({
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'Point', coordinates: [lng, lat] },
+      }));
+      closureSrc.setData({ type: 'FeatureCollection', features });
+    }
+
+    // Trigger algorithm race mini-map for red alert scenarios
+    if (activeScenario?.isRedAlert && closures.length > 0) {
+      fetchAlgoRace(activeScenario);
+    } else {
+      setShowAlgoRace(false);
+      setAlgoRaceData(null);
+    }
+
+    if (activeScenario?.end) {
+      const end = { lat: activeScenario.end.lat, lng: activeScenario.end.lng };
       setEndPoint(end);
-      fetchRoute(end, true);  // auto-start animation for dispatch scenarios
+      // Use scenario start position for ambulance
+      if (activeScenario.start && ambulanceMarker.current) {
+        ambulanceMarker.current.setLngLat([activeScenario.start.lng, activeScenario.start.lat]);
+      }
+      fetchRoute(end, true, closures);  // auto-start with road closures
       return;
     }
 
-    fetchRoute(undefined, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScenario]);
 
-  const fetchRoute = async (endOverride?: LatLng, autoStart = false) => {
+  const fetchRoute = async (endOverride?: LatLng, autoStart = false, blockedEdges?: number[][]) => {
     try {
       setIsRouting(true);
       setRouteError(null);
@@ -350,12 +419,17 @@ export default function LiveMap({
       const controller = new AbortController();
       routeAbortRef.current = controller;
 
-      const res = await api.post<RouteResponse>('/api/algo/calculate', {
+      const requestBody: any = {
         start,
         end: endOverride ?? endPoint,
         scenario_type: activeScenario?.title || 'ROUTINE',
         algorithm: algoRef.current,
-      }, { signal: controller.signal });
+      };
+      if (blockedEdges && blockedEdges.length > 0) {
+        requestBody.blocked_edges = blockedEdges;
+      }
+
+      const res = await api.post<RouteResponse>('/api/algo/calculate', requestBody, { signal: controller.signal });
 
       const coords = (res.data?.path_coordinates || []) as [number, number][];
       const cumDist = (res.data?.cum_distance_m || []) as number[];
@@ -533,6 +607,42 @@ export default function LiveMap({
       console.error('Failed to fetch comparison stats', e);
     } finally {
       setIsFetchingStats(false);
+    }
+  };
+
+  // Fetch both algorithms with road closures for the algorithm race mini-map
+  const fetchAlgoRace = async (scenario: any) => {
+    try {
+      setShowAlgoRace(true);
+      const start = scenario.start || { lat: 43.8334, lng: -79.2578 };
+      const end = scenario.end || endPoint;
+      const blocked = scenario.roadClosures || [];
+
+      const body = {
+        start,
+        end,
+        scenario_type: scenario.title || 'ROUTINE',
+        blocked_edges: blocked,
+      };
+
+      const [dijkRes, bmssspRes] = await Promise.all([
+        api.post<RouteResponse>('/api/algo/calculate', { ...body, algorithm: 'dijkstra' }),
+        api.post<RouteResponse>('/api/algo/calculate', { ...body, algorithm: 'bmsssp' }),
+      ]);
+
+      // Convert closure points to [lng, lat] for the mini-map
+      const closurePointsLngLat = blocked.map(([lat, lng]: [number, number]) => [lng, lat] as [number, number]);
+
+      setAlgoRaceData({
+        dijkstraCoords: dijkRes.data.path_coordinates || [],
+        dijkstraExecMs: Number(dijkRes.data.execution_time_ms ?? 100),
+        bmssspCoords: bmssspRes.data.path_coordinates || [],
+        bmssspExecMs: Number(bmssspRes.data.execution_time_ms ?? 100),
+        closurePoints: closurePointsLngLat,
+      });
+    } catch (e) {
+      console.error('Algorithm race fetch failed', e);
+      setShowAlgoRace(false);
     }
   };
 
@@ -885,8 +995,8 @@ export default function LiveMap({
                     key={key}
                     onClick={() => onScenarioInject?.(data)}
                     className={`w-full text-left px-3 py-2 text-[10px] font-mono font-bold rounded-lg border transition-all duration-300 hover:scale-[1.02] active:scale-95 ${data.isRedAlert
-                        ? 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500 hover:text-white shadow-[0_0_15px_rgba(239,68,68,0.15)]'
-                        : 'border-cyan-500/40 text-cyan-400 bg-cyan-500/5 hover:bg-cyan-500 hover:text-white shadow-[0_0_15px_rgba(0,240,255,0.15)]'
+                      ? 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500 hover:text-white shadow-[0_0_15px_rgba(239,68,68,0.15)]'
+                      : 'border-cyan-500/40 text-cyan-400 bg-cyan-500/5 hover:bg-cyan-500 hover:text-white shadow-[0_0_15px_rgba(0,240,255,0.15)]'
                       }`}
                   >
                     {key.replace(/_/g, ' ')}
@@ -911,6 +1021,9 @@ export default function LiveMap({
           {showEtaPanel ? '✕ DEV' : '⚙ DEV'}
         </button>
       </div>
+
+      {/* Algorithm Race Mini-Map (bottom-right) */}
+      <AlgoRaceMiniMap data={algoRaceData} visible={showAlgoRace} />
     </div>
   );
 }
