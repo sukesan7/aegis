@@ -4,6 +4,7 @@ import AIAssistant from './components/panels/AIAssistant';
 import PatientVitals from './components/panels/PatientVitals';
 import Navigation from './components/panels/Navigation';
 import DispatchFeed from './components/panels/DispatchFeed';
+import HospitalInfo from './components/panels/HospitalInfo';
 
 // Error Boundary to catch LiveMap crashes
 class MapErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
@@ -192,8 +193,9 @@ function App() {
 
         <div className="col-span-3 flex flex-col gap-4 h-full min-h-0">
           {/* SYNC: Passing activeScenario to Navigation for Turn-by-Turn */}
-          <Navigation className="h-1/3 shrink-0" activeScenario={activeScenario} navData={navData} />
-          <PatientVitals className="flex-1 min-h-0" scenarioData={activeScenario?.vitals} />
+          <Navigation className="h-1/4 shrink-0" activeScenario={activeScenario} navData={navData} />
+          <PatientVitals className="flex-[2] min-h-0" scenarioData={activeScenario?.vitals} />
+          <HospitalInfo className="flex-1 min-h-0" />
         </div>
       </main>
 

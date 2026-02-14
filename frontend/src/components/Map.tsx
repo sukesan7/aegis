@@ -387,24 +387,6 @@ export default function LiveMap({
   useEffect(() => {
     if (!map.current?.loaded()) return;
 
-    // Clear old roadblocks on new scenario
-    setActiveRoadblocks([]);
-    stoppedAtRoadblock.current = false;
-    roadblockStopIdx.current = null;
-    if (rerouteIntervalRef.current) { clearInterval(rerouteIntervalRef.current); rerouteIntervalRef.current = null; }
-
-    // Clear road closure markers
-    const closureSrc = map.current?.getSource('road-closures') as any;
-    if (closureSrc) closureSrc.setData({ type: 'FeatureCollection', features: [] });
-
-    // Trigger algorithm race mini-map for red alert scenarios
-    if (activeScenario?.isRedAlert) {
-      fetchAlgoRace(activeScenario);
-    } else {
-      setShowAlgoRace(false);
-      setAlgoRaceData(null);
-    }
-
     if (activeScenario?.end) {
       const end = { lat: activeScenario.end.lat, lng: activeScenario.end.lng };
       setEndPoint(end);
@@ -418,6 +400,10 @@ export default function LiveMap({
       return;
     }
 
+    // Don't fetch if there's no destination
+    if (endPoint) {
+      fetchRoute(undefined, true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScenario]);
 
@@ -436,6 +422,13 @@ export default function LiveMap({
       const cur = ambulanceMarker.current?.getLngLat();
       const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: 43.85421582751821, lng: -79.311760971958 };  // 1 University Blvd, Markham
 
+      const destination = endOverride ?? endPoint;
+      if (!destination) {
+        setRouteError('Please enter a destination first.');
+        setIsRouting(false);
+        return;
+      }
+
       // Create abort controller for this route request
       if (routeAbortRef.current) routeAbortRef.current.abort();
       const controller = new AbortController();
@@ -443,7 +436,7 @@ export default function LiveMap({
 
       const requestBody: any = {
         start,
-        end: endOverride ?? endPoint,
+        end: destination,
         scenario_type: activeScenario?.title || 'ROUTINE',
         algorithm: algoRef.current,
       };
