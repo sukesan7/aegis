@@ -131,6 +131,7 @@ export default function LiveMap({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const ambulanceMarker = useRef<maplibregl.Marker | null>(null);
+  const destMarker = useRef<maplibregl.Marker | null>(null);
 
   const [routeCoordinates, setRouteCoordinates] = useState<[number, number][]>([]);
   const [currentPos, setCurrentPos] = useState<[number, number] | null>(null);
@@ -199,27 +200,40 @@ export default function LiveMap({
       pitch: 70,
     });
 
-    // Marker
+    // Vehicle marker
     const el = document.createElement('div');
     el.className = 'ambulance-marker';
-    el.style.width = '28px';
-    el.style.height = '28px';
+    el.style.width = '40px';
+    el.style.height = '40px';
     el.style.display = 'flex';
     el.style.alignItems = 'center';
     el.style.justifyContent = 'center';
     el.style.willChange = 'transform';
     el.innerHTML = `
-      <div id="veh" style="
-        width: 24px; height: 24px;
-        background: #00f0ff;
-        border: 2px solid white;
-        border-radius: 6px;
-        box-shadow: 0 0 20px #00f0ff;
-        transform: rotate(45deg);
-      "></div>
+      <svg id="veh" width="40" height="40" viewBox="0 0 64 64" style="filter: drop-shadow(0 0 10px #00f0ff);">
+        <!-- body -->
+        <rect x="8" y="18" width="48" height="26" rx="6" fill="#1e293b" stroke="#00f0ff" stroke-width="2"/>
+        <!-- cab -->
+        <path d="M44 18 L56 18 Q58 18 58 20 L58 38 L44 38 Z" fill="#0f172a" stroke="#00f0ff" stroke-width="1.5"/>
+        <!-- windshield -->
+        <path d="M46 22 L54 22 Q55 22 55 23 L55 32 L46 32 Z" fill="#38bdf8" opacity="0.5"/>
+        <!-- red cross -->
+        <rect x="20" y="29" width="12" height="3" rx="1" fill="#ef4444"/>
+        <rect x="24.5" y="25" width="3" height="11" rx="1" fill="#ef4444"/>
+        <!-- siren -->
+        <rect x="24" y="13" width="8" height="6" rx="2" fill="#ef4444" opacity="0.9"/>
+        <rect x="24" y="13" width="8" height="6" rx="2" fill="#ef4444" opacity="0.5">
+          <animate attributeName="opacity" values="0.3;1;0.3" dur="0.8s" repeatCount="indefinite"/>
+        </rect>
+        <!-- wheels -->
+        <circle cx="18" cy="44" r="5" fill="#334155" stroke="#00f0ff" stroke-width="1.5"/>
+        <circle cx="18" cy="44" r="2" fill="#00f0ff"/>
+        <circle cx="46" cy="44" r="5" fill="#334155" stroke="#00f0ff" stroke-width="1.5"/>
+        <circle cx="46" cy="44" r="2" fill="#00f0ff"/>
+      </svg>
     `;
 
-    ambulanceMarker.current = new maplibregl.Marker(el).setLngLat([-79.2578, 43.8334]).addTo(map.current);  // Markham Stouffville Hospital
+    ambulanceMarker.current = new maplibregl.Marker({ element: el }).setLngLat([-79.2578, 43.8334]).addTo(map.current);  // Markham Stouffville Hospital
 
     map.current.on('load', () => {
       map.current?.addSource('aegis-route', {
@@ -350,6 +364,27 @@ export default function LiveMap({
         algorithm: res.data.algorithm,
       };
 
+      // Place a red pin at the destination
+      if (map.current) {
+        if (destMarker.current) destMarker.current.remove();
+        const destEl = document.createElement('div');
+        destEl.style.width = '32px';
+        destEl.style.height = '32px';
+        destEl.style.display = 'flex';
+        destEl.style.alignItems = 'center';
+        destEl.style.justifyContent = 'center';
+        destEl.innerHTML = `
+          <svg width="32" height="32" viewBox="0 0 24 24" style="filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));">
+            <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z" fill="#ef4444" stroke="white" stroke-width="1.2"/>
+            <circle cx="12" cy="9" r="2.5" fill="white"/>
+          </svg>
+        `;
+        const destCoord = res.data.snapped_end || coords[coords.length - 1];
+        destMarker.current = new maplibregl.Marker({ element: destEl, anchor: 'bottom' })
+          .setLngLat(destCoord)
+          .addTo(map.current);
+      }
+
       // Draw route line on map (but don't start animation yet)
       const geojson = {
         type: 'FeatureCollection',
@@ -428,6 +463,9 @@ export default function LiveMap({
     setSuggestions([]);
     setShowSuggestions(false);
     routeRef.current = null;
+
+    // Clear destination marker
+    if (destMarker.current) { destMarker.current.remove(); destMarker.current = null; }
 
     // Clear the route line from the map
     const src = map.current?.getSource('aegis-route') as any;
@@ -575,6 +613,9 @@ export default function LiveMap({
         ambulanceMarker.current.setLngLat(end);
         setCurrentPos(end);
         setSimRunning(false);
+        // Clear the route line — trip is done
+        const src = map.current?.getSource('aegis-route') as any;
+        if (src) src.setData({ type: 'FeatureCollection', features: [] });
         // final nav push
         const finalNav = computeNavLive(
           { totalDist: m.totalDist, totalTime, steps: m.steps, algorithm: m.algorithm },
@@ -597,6 +638,20 @@ export default function LiveMap({
 
       ambulanceMarker.current.setLngLat(pos);
       setCurrentPos(pos);
+
+      // Trim the route line: only show the path AHEAD of the vehicle
+      const remainingCoords: [number, number][] = [pos, ...m.coords.slice(i)];
+      const src = map.current?.getSource('aegis-route') as any;
+      if (src) {
+        src.setData({
+          type: 'FeatureCollection',
+          features: [{
+            type: 'Feature',
+            properties: {},
+            geometry: { type: 'LineString', coordinates: remainingCoords },
+          }],
+        });
+      }
 
       // traveled distance for nav
       const d0 = m.cumDist[i - 1];

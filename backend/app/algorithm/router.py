@@ -504,172 +504,157 @@ def _build_steps(edges_meta: List[Dict[str, Any]], cum_dist: List[float]) -> Lis
     return merged
 
 
-# -------------------------------
-# Endpoints
-# -------------------------------
+# --- Nominatim helpers (async, no locks needed) ---
+_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_NOMINATIM_HEADERS = {"User-Agent": "aegis-paradash/1.0"}
+_NOMINATIM_MIN_INTERVAL = 1.1  # seconds between calls
+_nominatim_last_call: float = 0.0
+
+# York Region bounding box  (west, south, east, north)
+_YORK_REGION_VIEWBOX = "-79.65,43.75,-79.15,44.15"
+
+# Caches
 _geocode_cache: Dict[str, Tuple[float, float]] = {}
+_nominatim_cache: Dict[str, list] = {}
+
+
+async def _nominatim_rate_wait() -> None:
+    """Sleep just enough so consecutive Nominatim calls stay ≥1.1 s apart."""
+    global _nominatim_last_call
+    now = time.monotonic()
+    elapsed = now - _nominatim_last_call
+    if elapsed < _NOMINATIM_MIN_INTERVAL:
+        await asyncio.sleep(_NOMINATIM_MIN_INTERVAL - elapsed)
 
 
 @router.get("/geocode", response_model=GeocodeResponse)
 async def geocode(q: str = Query(..., min_length=3)):
-    """Geocode a query string via OSMnx (which calls Nominatim internally).
-
-    Shares the global Nominatim rate-limit lock so /geocode and /autocomplete
-    never exceed 1 request/second combined.  The blocking ox.geocode() call
-    is offloaded to a thread so it doesn't stall the async event loop.
-    """
+    """Geocode a query string by calling the Nominatim API directly via httpx."""
     global _nominatim_last_call
+    import httpx
+
     cache_key = q.strip().lower()
 
-    # Fast-path: return cached result without hitting Nominatim
+    # Fast-path: cached result
     if cache_key in _geocode_cache:
         lat, lng = _geocode_cache[cache_key]
         return GeocodeResponse(lat=lat, lng=lng, display_name=q)
 
     try:
-        async with _nominatim_lock:
-            # Double-check cache inside the lock
-            if cache_key in _geocode_cache:
-                lat, lng = _geocode_cache[cache_key]
-                return GeocodeResponse(lat=lat, lng=lng, display_name=q)
+        await _nominatim_rate_wait()
 
-            # Enforce minimum interval between Nominatim calls
-            now = time.monotonic()
-            elapsed = now - _nominatim_last_call
-            if elapsed < _NOMINATIM_MIN_INTERVAL:
-                await asyncio.sleep(_NOMINATIM_MIN_INTERVAL - elapsed)
-
-            # Run blocking ox.geocode in a thread to avoid stalling the event loop
-            loop = asyncio.get_event_loop()
-            lat, lng = await loop.run_in_executor(None, ox.geocode, q)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _NOMINATIM_URL,
+                headers=_NOMINATIM_HEADERS,
+                params={"q": q, "format": "json", "limit": 1},
+            )
             _nominatim_last_call = time.monotonic()
+            resp.raise_for_status()
+            data = resp.json()
 
-        # Cache the result (bounded to 200 entries)
+        if not data:
+            raise HTTPException(status_code=400, detail=f"No results for '{q}'")
+
+        lat, lng = float(data[0]["lat"]), float(data[0]["lon"])
+
+        # Cache (bounded)
         if len(_geocode_cache) > 200:
             _geocode_cache.clear()
-        _geocode_cache[cache_key] = (float(lat), float(lng))
+        _geocode_cache[cache_key] = (lat, lng)
 
-        return GeocodeResponse(lat=float(lat), lng=float(lng), display_name=q)
+        return GeocodeResponse(lat=lat, lng=lng, display_name=q)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"Geocode failed: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Geocode failed: {str(e)}")
 
 
-# York Region bounding box (SW corner to NE corner)
-# Covers: Markham, Richmond Hill, Vaughan, Newmarket, Aurora, King, Whitchurch-Stouffville, etc.
-_YORK_REGION_VIEWBOX = (-79.65, 43.75, -79.15, 44.15)  # (west, south, east, north)
-
-# --- Nominatim rate-limit protection ---
-# Nominatim enforces a strict 1 request/second policy.
-# We use a lock + timestamp to guarantee compliance server-side.
-_nominatim_lock = asyncio.Lock()
-_nominatim_last_call: float = 0.0
-_nominatim_cache: Dict[str, list] = {}  # simple query → results cache
-_NOMINATIM_MIN_INTERVAL = 1.1  # seconds between calls (slightly > 1s for safety)
-
-
 @router.get("/autocomplete", response_model=AutocompleteResponse)
 async def autocomplete(q: str = Query(..., min_length=3)):
-    """Return up to 5 address suggestions within York Region.
-
-    Rate-limited to respect Nominatim's 1 req/s policy.
-    Cached to avoid redundant lookups for repeated queries.
-    """
+    """Return up to 5 address suggestions within York Region via Nominatim."""
     global _nominatim_last_call
-    from geopy.geocoders import Nominatim
+    import httpx
 
     cache_key = q.strip().lower()
 
-    # Return cached results immediately (no API call needed)
+    # Fast-path: cached results
     if cache_key in _nominatim_cache:
         return AutocompleteResponse(results=_nominatim_cache[cache_key])
 
     try:
-        # Acquire lock so only one Nominatim request is in-flight at a time
-        async with _nominatim_lock:
-            # Check cache again inside lock (another request may have populated it)
-            if cache_key in _nominatim_cache:
-                return AutocompleteResponse(results=_nominatim_cache[cache_key])
+        await _nominatim_rate_wait()
 
-            # Enforce minimum interval between Nominatim calls
-            now = time.monotonic()
-            elapsed = now - _nominatim_last_call
-            if elapsed < _NOMINATIM_MIN_INTERVAL:
-                await asyncio.sleep(_NOMINATIM_MIN_INTERVAL - elapsed)
-
-            geolocator = Nominatim(
-                user_agent="aegis-paradash/1.0",
-                timeout=5,
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                _NOMINATIM_URL,
+                headers=_NOMINATIM_HEADERS,
+                params={
+                    "q": q,
+                    "format": "json",
+                    "limit": 10,
+                    "addressdetails": 1,
+                    "viewbox": _YORK_REGION_VIEWBOX,
+                    "bounded": 1,
+                },
             )
-            west, south, east, north = _YORK_REGION_VIEWBOX
-
-            # Run the blocking geocode call in a thread to avoid stalling the event loop
-            from functools import partial
-            _geocode_fn = partial(
-                geolocator.geocode,
-                q,
-                exactly_one=False,
-                limit=10,  # request more, then filter to York Region only
-                viewbox=[(north, west), (south, east)],
-                bounded=True,
-                addressdetails=True,
-            )
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(None, _geocode_fn)
             _nominatim_last_call = time.monotonic()
+            resp.raise_for_status()
+            data = resp.json()
 
-        if not results:
+        if not data:
             _nominatim_cache[cache_key] = []
             return AutocompleteResponse(results=[])
 
         # Post-filter: only keep results actually in York Region
         york_results = [
-            r for r in results
-            if r.raw.get("address", {}).get("county", "").lower() == "york region"
+            r for r in data
+            if r.get("address", {}).get("county", "").lower() == "york region"
+               or r.get("address", {}).get("state_district", "").lower() == "york region"
         ]
 
         # Rank results: prioritize actual addresses over named places
-        # Parse the query for a possible house number and street fragment
         query_lower = q.strip().lower()
         query_words = query_lower.split()
 
-        def _rank(r) -> int:
-            """Lower score = better match. Addresses with matching house numbers rank highest."""
-            addr = r.raw.get("address", {})
+        def _rank(r: dict) -> int:
+            addr = r.get("address", {})
             house_number = str(addr.get("house_number", "")).strip()
             road = str(addr.get("road", "")).lower()
             score = 100
-
-            # If query starts with a number and this result has that house number, big boost
             if query_words and query_words[0].isdigit():
                 if house_number == query_words[0]:
-                    score -= 50  # exact house number match
+                    score -= 50
                 elif house_number:
-                    score -= 10  # has some house number (still an address)
-
-            # Boost if the road name contains query fragments
+                    score -= 10
             for w in query_words:
                 if not w.isdigit() and w in road:
                     score -= 20
-
             return score
 
         york_results.sort(key=_rank)
 
         out = [
             AutocompleteResult(
-                lat=float(r.latitude),
-                lng=float(r.longitude),
-                display_name=str(r.address),
+                lat=float(r["lat"]),
+                lng=float(r["lon"]),
+                display_name=r.get("display_name", ""),
             )
             for r in york_results[:5]
         ]
 
-        # Cache the results (bounded to 200 entries to avoid unbounded growth)
+        # Cache (bounded)
         if len(_nominatim_cache) > 200:
             _nominatim_cache.clear()
         _nominatim_cache[cache_key] = out
 
         return AutocompleteResponse(results=out)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"Autocomplete failed: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Autocomplete failed: {str(e)}")
 
