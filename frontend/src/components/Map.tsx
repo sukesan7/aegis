@@ -319,14 +319,17 @@ export default function LiveMap({
   useEffect(() => {
     if (!map.current?.loaded()) return;
 
-    if (activeScenario?.location) {
-      const end = { lat: activeScenario.location.lat, lng: activeScenario.location.lng };
+    if (activeScenario?.end) {
+      const end = { lat: activeScenario.end.lat, lng: activeScenario.end.lng };
       setEndPoint(end);
       fetchRoute(end, true);  // auto-start animation for dispatch scenarios
       return;
     }
 
-    fetchRoute(undefined, true);
+    // Don't fetch if there's no destination
+    if (endPoint) {
+      fetchRoute(undefined, true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScenario]);
 
@@ -345,6 +348,13 @@ export default function LiveMap({
       const cur = ambulanceMarker.current?.getLngLat();
       const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: 43.85421582751821, lng: -79.311760971958 };  // 1 University Blvd, Markham
 
+      const destination = endOverride ?? endPoint;
+      if (!destination) {
+        setRouteError('Please enter a destination first.');
+        setIsRouting(false);
+        return;
+      }
+
       // Create abort controller for this route request
       if (routeAbortRef.current) routeAbortRef.current.abort();
       const controller = new AbortController();
@@ -352,7 +362,7 @@ export default function LiveMap({
 
       const res = await api.post<RouteResponse>('/api/algo/calculate', {
         start,
-        end: endOverride ?? endPoint,
+        end: destination,
         scenario_type: activeScenario?.title || 'ROUTINE',
         algorithm: algoRef.current,
       }, { signal: controller.signal });
