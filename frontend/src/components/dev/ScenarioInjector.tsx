@@ -11,10 +11,6 @@ const SCENARIOS = {
     end: { lat: 43.8710, lng: -79.4440 },
     aiPrompt: "URGENT: 65yo Male, Cardiac Arrest at Major Mackenzie and Jane. CPR in progress. Route to Mackenzie Health immediately via optimized Duan-Mao pivots.",
     vitals: { hr: 0, bp: "0/0", o2: 45 },
-    roadClosures: [
-      [43.862, -79.50],
-      [43.865, -79.48],
-    ],
   },
   "MVA_TRAUMA": {
     title: "MVA TRAUMA // HWY 404",
@@ -25,10 +21,6 @@ const SCENARIOS = {
     end: { lat: 43.7220, lng: -79.3760 },
     aiPrompt: "CRITICAL: Multi-vehicle accident on Hwy 404. Multiple trauma patients. Route to Sunnybrook Trauma Centre. Avoid 404 congestion using side-street pivots.",
     vitals: { hr: 115, bp: "90/60", o2: 92 },
-    roadClosures: [
-      [43.82, -79.38],
-      [43.79, -79.38],
-    ],
   },
   "ROUTINE_PATROL": {
     title: "ROUTINE PATROL // ZONE B",
@@ -55,8 +47,8 @@ export default function ScenarioInjector({ onInject }: { onInject: (s: any) => v
             key={key}
             onClick={() => onInject(data)}
             className={`px-4 py-1.5 text-[10px] font-mono font-bold rounded-lg border transition-all duration-300 transform hover:scale-105 active:scale-95 ${data.isRedAlert
-                ? 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500 hover:text-white shadow-[0_0_15px_rgba(239,68,68,0.2)]'
-                : 'border-cyan-500/40 text-cyan-400 bg-cyan-500/5 hover:bg-cyan-500 hover:text-white shadow-[0_0_15px_rgba(0,240,255,0.2)]'
+              ? 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500 hover:text-white shadow-[0_0_15px_rgba(239,68,68,0.2)]'
+              : 'border-cyan-500/40 text-cyan-400 bg-cyan-500/5 hover:bg-cyan-500 hover:text-white shadow-[0_0_15px_rgba(0,240,255,0.2)]'
               }`}
           >
             {key.replace(/_/g, ' ')}

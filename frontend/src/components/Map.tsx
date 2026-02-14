@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import axios from 'axios';
-import AlgoRaceMiniMap from './AlgoRaceMiniMap';
+import AlgoRaceMiniMap, { AlgoRaceData } from './AlgoRaceMiniMap';
 
 type LatLng = { lat: number; lng: number };
 
@@ -129,32 +129,25 @@ const SCENARIOS: Record<string, any> = {
     isRedAlert: true,
     start: { lat: 43.858, lng: -79.54 },
     end: { lat: 43.871, lng: -79.444 },
+    destName: 'Mackenzie Health Hospital, Richmond Hill',
     aiPrompt: 'URGENT: 65yo Male, Cardiac Arrest at Major Mackenzie and Jane. CPR in progress. Route to Mackenzie Health immediately via optimized Duan-Mao pivots.',
     vitals: { hr: 0, bp: '0/0', o2: 45 },
-    // Road closures along the direct path — forces rerouting
-    roadClosures: [
-      [43.862, -79.50],   // Major Mackenzie & Weston Rd
-      [43.865, -79.48],   // Major Mackenzie & Pine Valley Dr
-    ],
   },
   MVA_TRAUMA: {
     title: 'MVA TRAUMA // HWY 404',
     isRedAlert: true,
     start: { lat: 43.86, lng: -79.37 },
     end: { lat: 43.722, lng: -79.376 },
+    destName: 'Sunnybrook Trauma Centre, Toronto',
     aiPrompt: 'CRITICAL: Multi-vehicle accident on Hwy 404. Multiple trauma patients. Route to Sunnybrook Trauma Centre. Avoid 404 congestion using side-street pivots.',
     vitals: { hr: 115, bp: '90/60', o2: 92 },
-    // Road closures along HWY 404 corridor — forces side-street routing
-    roadClosures: [
-      [43.82, -79.38],    // Hwy 404 near Sheppard
-      [43.79, -79.38],    // Hwy 404 near Finch
-    ],
   },
   ROUTINE_PATROL: {
     title: 'ROUTINE PATROL // ZONE B',
     isRedAlert: false,
     start: { lat: 43.864, lng: -79.4 },
     end: { lat: 43.88, lng: -79.4 },
+    destName: 'Richmond Hill Zone B',
     aiPrompt: 'Unit 992, proceed with routine patrol of Richmond Hill Zone B. Maintain low-latency uplink with mission control.',
     vitals: { hr: 72, bp: '120/80', o2: 98 },
   },
@@ -195,8 +188,37 @@ export default function LiveMap({
   const [simRunning, setSimRunning] = useState(false);   // animation is in progress
 
   // Algorithm Race Mini-Map
-  const [algoRaceData, setAlgoRaceData] = useState<any>(null);
+  const [algoRaceData, setAlgoRaceData] = useState<AlgoRaceData | null>(null);
   const [showAlgoRace, setShowAlgoRace] = useState(false);
+
+  // Dynamic Roadblock Injection
+  const [activeRoadblocks, setActiveRoadblocks] = useState<[number, number][]>([]);
+  const roadblocksRef = useRef<[number, number][]>([]);
+  const rerouteIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Hard-freeze flag: when true, ambulance does NOT advance past stop index
+  const stoppedAtRoadblock = useRef(false);
+  const roadblockStopIdx = useRef<number | null>(null); // route index where to stop
+  // Pending reroute: stored here until ambulance reaches the roadblock, then applied
+  const pendingRerouteRef = useRef<{ coords: [number, number][]; cumDist: number[]; cumTime: number[]; totalDist: number; totalTime: number; steps: NavStep[]; algorithm: string } | null>(null);
+
+  // Apply a queued reroute: swap it into routeRef and unfreeze the ambulance
+  const applyPendingReroute = () => {
+    const pending = pendingRerouteRef.current;
+    if (!pending) return;
+    routeRef.current = pending;
+    startTimeRef.current = performance.now();
+    pendingRerouteRef.current = null;
+    stoppedAtRoadblock.current = false;
+    roadblockStopIdx.current = null;
+    // Update the route line on the map
+    const src = map.current?.getSource('aegis-route') as any;
+    if (src) {
+      src.setData({
+        type: 'FeatureCollection',
+        features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: pending.coords } }],
+      });
+    }
+  };
 
   // Autocomplete
   type Suggestion = { lat: number; lng: number; display_name: string };
@@ -365,20 +387,18 @@ export default function LiveMap({
   useEffect(() => {
     if (!map.current?.loaded()) return;
 
-    // Draw road closure markers on main map
-    const closures = activeScenario?.roadClosures || [];
+    // Clear old roadblocks on new scenario
+    setActiveRoadblocks([]);
+    stoppedAtRoadblock.current = false;
+    roadblockStopIdx.current = null;
+    if (rerouteIntervalRef.current) { clearInterval(rerouteIntervalRef.current); rerouteIntervalRef.current = null; }
+
+    // Clear road closure markers
     const closureSrc = map.current?.getSource('road-closures') as any;
-    if (closureSrc) {
-      const features = closures.map(([lat, lng]: [number, number]) => ({
-        type: 'Feature',
-        properties: {},
-        geometry: { type: 'Point', coordinates: [lng, lat] },
-      }));
-      closureSrc.setData({ type: 'FeatureCollection', features });
-    }
+    if (closureSrc) closureSrc.setData({ type: 'FeatureCollection', features: [] });
 
     // Trigger algorithm race mini-map for red alert scenarios
-    if (activeScenario?.isRedAlert && closures.length > 0) {
+    if (activeScenario?.isRedAlert) {
       fetchAlgoRace(activeScenario);
     } else {
       setShowAlgoRace(false);
@@ -388,11 +408,13 @@ export default function LiveMap({
     if (activeScenario?.end) {
       const end = { lat: activeScenario.end.lat, lng: activeScenario.end.lng };
       setEndPoint(end);
+      // Show destination name in search bar
+      if (activeScenario.destName) setDestQuery(activeScenario.destName);
       // Use scenario start position for ambulance
       if (activeScenario.start && ambulanceMarker.current) {
         ambulanceMarker.current.setLngLat([activeScenario.start.lng, activeScenario.start.lat]);
       }
-      fetchRoute(end, true, closures);  // auto-start with road closures
+      fetchRoute(end, true);  // auto-start without pre-set closures
       return;
     }
 
@@ -567,6 +589,12 @@ export default function LiveMap({
     setSuggestions([]);
     setShowSuggestions(false);
     routeRef.current = null;
+    // Clear roadblock state
+    setActiveRoadblocks([]);
+    roadblocksRef.current = [];
+    stoppedAtRoadblock.current = false;
+    roadblockStopIdx.current = null;
+    if (rerouteIntervalRef.current) { clearInterval(rerouteIntervalRef.current); rerouteIntervalRef.current = null; }
 
     // Clear destination marker
     if (destMarker.current) { destMarker.current.remove(); destMarker.current = null; }
@@ -610,19 +638,25 @@ export default function LiveMap({
     }
   };
 
-  // Fetch both algorithms with road closures for the algorithm race mini-map
+  // Fetch both algorithms with exploration data for the algorithm race mini-map
+  // MARKHAM STOUFFVILLE HOSPITAL — always the target for the algo race
+  const MARKHAM_STOUFFVILLE_HOSPITAL = { lat: 43.8330, lng: -79.2580 };
+
   const fetchAlgoRace = async (scenario: any) => {
     try {
       setShowAlgoRace(true);
-      const start = scenario.start || { lat: 43.8334, lng: -79.2578 };
-      const end = scenario.end || endPoint;
-      const blocked = scenario.roadClosures || [];
+      // Use ambulance's current position (real-time), fall back to scenario start
+      const cur = ambulanceMarker.current?.getLngLat();
+      const start = cur
+        ? { lat: cur.lat, lng: cur.lng }
+        : (scenario.start || { lat: 43.85421582751821, lng: -79.311760971958 });
+      const end = MARKHAM_STOUFFVILLE_HOSPITAL;
 
       const body = {
         start,
         end,
         scenario_type: scenario.title || 'ROUTINE',
-        blocked_edges: blocked,
+        include_exploration: true,
       };
 
       const [dijkRes, bmssspRes] = await Promise.all([
@@ -630,20 +664,167 @@ export default function LiveMap({
         api.post<RouteResponse>('/api/algo/calculate', { ...body, algorithm: 'bmsssp' }),
       ]);
 
-      // Convert closure points to [lng, lat] for the mini-map
-      const closurePointsLngLat = blocked.map(([lat, lng]: [number, number]) => [lng, lat] as [number, number]);
-
       setAlgoRaceData({
         dijkstraCoords: dijkRes.data.path_coordinates || [],
         dijkstraExecMs: Number(dijkRes.data.execution_time_ms ?? 100),
+        dijkstraExplored: (dijkRes.data as any).explored_coords || [],
         bmssspCoords: bmssspRes.data.path_coordinates || [],
         bmssspExecMs: Number(bmssspRes.data.execution_time_ms ?? 100),
-        closurePoints: closurePointsLngLat,
+        bmssspExplored: (bmssspRes.data as any).explored_coords || [],
+        closurePoints: [],
+      });
+
+      // Also populate dev panel stats so they match the mini-map
+      setAlgoStats({
+        dijkstra: {
+          exec_ms: Number(dijkRes.data.execution_time_ms ?? 0),
+          eta_s: Number(dijkRes.data.total_time_s ?? 0),
+          dist_m: Number(dijkRes.data.total_distance_m ?? 0),
+        },
+        bmsssp: {
+          exec_ms: Number(bmssspRes.data.execution_time_ms ?? 0),
+          eta_s: Number(bmssspRes.data.total_time_s ?? 0),
+          dist_m: Number(bmssspRes.data.total_distance_m ?? 0),
+        },
       });
     } catch (e) {
       console.error('Algorithm race fetch failed', e);
       setShowAlgoRace(false);
     }
+  };
+
+  // Background reroute: fetch a new route without stopping the animation.
+  // Seamlessly swaps routeRef so the ambulance continues on the new path.
+  const bgRerouteRef = useRef<AbortController | null>(null);
+  const backgroundReroute = async (dest: LatLng, blockedEdges: number[][]) => {
+    // Abort any previous background reroute in-flight
+    if (bgRerouteRef.current) bgRerouteRef.current.abort();
+    const controller = new AbortController();
+    bgRerouteRef.current = controller;
+
+    try {
+      const cur = ambulanceMarker.current?.getLngLat();
+      if (!cur) return;
+      const start = { lat: cur.lat, lng: cur.lng };
+
+      const requestBody: any = {
+        start,
+        end: dest,
+        scenario_type: activeScenario?.title || 'ROUTINE',
+        algorithm: algoRef.current,
+      };
+      if (blockedEdges.length > 0) requestBody.blocked_edges = blockedEdges;
+
+      const res = await api.post<RouteResponse>('/api/algo/calculate', requestBody, { signal: controller.signal });
+
+      const coords = (res.data?.path_coordinates || []) as [number, number][];
+      const cumDist = (res.data?.cum_distance_m || []) as number[];
+      const cumTime = (res.data?.cum_time_s || []) as number[];
+      const totalDist = Number(res.data?.total_distance_m ?? 0);
+      const totalTime = Number(res.data?.total_time_s ?? 0);
+      const steps = (res.data?.steps || []) as NavStep[];
+
+      if (!coords.length || !cumDist.length || !cumTime.length) return;
+
+      // --- SMOOTH TRANSITION: prepend the roadblock stop position ---
+      // The new route starts from the backend's snapped start, which might be on
+      // a different road. Prepend the roadblock stop point so the ambulance
+      // smoothly drives from the stop to the first point of the new route.
+      const m = routeRef.current;
+      let stopPos: [number, number] = [cur.lng, cur.lat];
+      if (m && roadblockStopIdx.current !== null) {
+        const si = Math.min(roadblockStopIdx.current, m.coords.length - 1);
+        stopPos = m.coords[si];
+      }
+
+      const firstRoutePoint = coords[0];
+      const dx = firstRoutePoint[0] - stopPos[0];
+      const dy = firstRoutePoint[1] - stopPos[1];
+      const gapDeg = Math.sqrt(dx * dx + dy * dy);
+      // Approximate gap in meters (1 deg ≈ 111,000m at this latitude)
+      const gapM = gapDeg * 111000;
+      // Transition time: assume ~20 km/h for maneuvering = 5.56 m/s
+      const transitionTimeS = Math.max(2, gapM / 5.56);
+
+      // Prepend stop position to route
+      const smoothCoords: [number, number][] = [stopPos, ...coords];
+      const smoothCumDist = [0, ...cumDist.map(d => d + gapM)];
+      const smoothCumTime = [0, ...cumTime.map(t => t + transitionTimeS)];
+      const smoothTotalDist = totalDist + gapM;
+      const smoothTotalTime = totalTime + transitionTimeS;
+
+      // QUEUE the reroute — don't apply it yet.
+      // The animation tick will apply it when the ambulance reaches the roadblock.
+      pendingRerouteRef.current = {
+        coords: smoothCoords,
+        cumDist: smoothCumDist,
+        cumTime: smoothCumTime,
+        totalDist: smoothTotalDist,
+        totalTime: smoothTotalTime,
+        steps,
+        algorithm: res.data.algorithm || 'dijkstra',
+      };
+    } catch (e: any) {
+      if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return;
+      console.warn('Background reroute failed (ambulance continues on current route)', e?.message);
+    }
+  };
+
+  // Inject a roadblock ahead of the ambulance on the current route
+  const injectRoadblock = () => {
+    if (!routeRef.current || !ambulanceMarker.current) return;
+    const curLngLat = ambulanceMarker.current.getLngLat();
+    const coords = routeRef.current.coords;
+    const cumDist = routeRef.current.cumDist;
+
+    // Find the closest point on the route to the ambulance
+    let minD = Infinity, closestIdx = 0;
+    for (let i = 0; i < coords.length; i++) {
+      const dx = coords[i][0] - curLngLat.lng;
+      const dy = coords[i][1] - curLngLat.lat;
+      const d = dx * dx + dy * dy;
+      if (d < minD) { minD = d; closestIdx = i; }
+    }
+
+    // Pick a point ~600m ahead on the route
+    const targetDist = (cumDist[closestIdx] || 0) + 600;
+    let aheadIdx = closestIdx;
+    for (let i = closestIdx; i < cumDist.length; i++) {
+      if (cumDist[i] >= targetDist) { aheadIdx = i; break; }
+      aheadIdx = i;
+    }
+    // Don't place too close to the end
+    if (aheadIdx >= coords.length - 5) aheadIdx = Math.max(closestIdx + 1, coords.length - 10);
+
+    const blockCoord: [number, number] = [coords[aheadIdx][1], coords[aheadIdx][0]]; // [lat, lng]
+
+    // Calculate stop point: a few route points BEFORE the roadblock
+    const stopIdx = Math.max(closestIdx + 1, aheadIdx - 5);
+    roadblockStopIdx.current = stopIdx;
+    // FREEZE the ambulance immediately — it must not pass the stop point
+    stoppedAtRoadblock.current = true;
+
+    setActiveRoadblocks(prev => {
+      const updated = [...prev, blockCoord];
+      roadblocksRef.current = updated;
+
+      // Draw markers on the main map
+      const closureSrc = map.current?.getSource('road-closures') as any;
+      if (closureSrc) {
+        const features = updated.map(([lat, lng]) => ({
+          type: 'Feature',
+          properties: {},
+          geometry: { type: 'Point', coordinates: [lng, lat] },
+        }));
+        closureSrc.setData({ type: 'FeatureCollection', features });
+      }
+
+      // Immediately reroute in background (ambulance will stop at roadblock while waiting)
+      const dest = endPoint || (activeScenario?.end ? { lat: activeScenario.end.lat, lng: activeScenario.end.lng } : null);
+      if (dest) backgroundReroute(dest, updated);
+
+      return updated;
+    });
   };
 
   const handleGeocode = async () => {
@@ -753,6 +934,8 @@ export default function LiveMap({
         ambulanceMarker.current.setLngLat(end);
         setCurrentPos(end);
         setSimRunning(false);
+        // Clear auto-reroute on arrival
+        if (rerouteIntervalRef.current) { clearInterval(rerouteIntervalRef.current); rerouteIntervalRef.current = null; }
         // Clear the route line — trip is done
         const src = map.current?.getSource('aegis-route') as any;
         if (src) src.setData({ type: 'FeatureCollection', features: [] });
@@ -774,7 +957,30 @@ export default function LiveMap({
 
       const a = m.coords[i - 1];
       const b = m.coords[i];
-      const pos: [number, number] = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
+      let pos: [number, number] = [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
+
+      // --- ROADBLOCK HARD FREEZE ---
+      // If stoppedAtRoadblock is set, clamp the ambulance at the stop point
+      if (stoppedAtRoadblock.current && roadblockStopIdx.current !== null) {
+        const stopI = Math.min(roadblockStopIdx.current, m.coords.length - 1);
+        // Don't advance past the stop index
+        if (i >= stopI) {
+          pos = m.coords[stopI];
+          ambulanceMarker.current.setLngLat(pos);
+          setCurrentPos(pos);
+
+          // Check if a pending reroute is ready to apply
+          if (pendingRerouteRef.current) {
+            applyPendingReroute();
+          } else {
+            // Freeze the sim clock at this point so it resumes correctly after reroute
+            const stopTime = m.cumTime[stopI] || 0;
+            startTimeRef.current = performance.now() - (stopTime / SIM_SPEEDUP) * 1000;
+          }
+          animRef.current = requestAnimationFrame(tick);
+          return;
+        }
+      }
 
       ambulanceMarker.current.setLngLat(pos);
       setCurrentPos(pos);
@@ -950,6 +1156,7 @@ export default function LiveMap({
             </button>
           )}
 
+
         </div>
       </div>
 
@@ -1004,6 +1211,25 @@ export default function LiveMap({
                 ))}
               </div>
             </div>
+
+            {/* Divider */}
+            <div className="border-t border-white/10" />
+
+            {/* Dynamic Roadblock Injection */}
+            {simRunning && (
+              <div>
+                <div className="text-[10px] text-orange-400/60 font-mono font-bold uppercase tracking-wider mb-2">Road Disruption</div>
+                <button
+                  onClick={injectRoadblock}
+                  className="w-full text-left px-3 py-2 text-[10px] font-mono font-bold rounded-lg border transition-all duration-300 hover:scale-[1.02] active:scale-95 border-orange-500/40 text-orange-400 bg-orange-500/5 hover:bg-orange-500 hover:text-white shadow-[0_0_15px_rgba(249,115,22,0.15)]"
+                >
+                  🚧 INJECT ROADBLOCK
+                </button>
+                {activeRoadblocks.length > 0 && (
+                  <div className="text-[8px] text-orange-300/50 font-mono mt-1">{activeRoadblocks.length} active roadblock{activeRoadblocks.length > 1 ? 's' : ''}</div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
