@@ -40,6 +40,7 @@ class RouteRequest(BaseModel):
     start: Coordinate
     end: Coordinate
     scenario_type: str = "ROUTINE"  # ROUTINE / TRAUMA / CARDIAC ARREST etc.
+    algorithm: str = "dijkstra"     # "dijkstra" or "bmsssp"
 
 
 class PivotNode(BaseModel):
@@ -518,8 +519,9 @@ async def calculate_route(req: RouteRequest):
         orig_node = ox.nearest_nodes(G, X=req.start.lng, Y=req.start.lat)
         dest_node = ox.nearest_nodes(G, X=req.end.lng, Y=req.end.lat)
 
-        # 3) Shortest path
-        if AEGIS_ROUTE_ALGO == "bmsssp":
+        # 3) Shortest path (algorithm chosen by frontend)
+        chosen_algo = (req.algorithm or AEGIS_ROUTE_ALGO).lower()
+        if chosen_algo == "bmsssp":
             path_nodes = _bmsssp_path(G, orig_node, dest_node)
             algo_label = "BM-SSSP (Duan–Mao et al. 2025) // OSM"
         else:
