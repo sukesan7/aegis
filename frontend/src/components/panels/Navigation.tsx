@@ -8,6 +8,13 @@ function formatEta(seconds: number): string {
   return `${mm}:${ss.toString().padStart(2, '0')}`;
 }
 
+function formatDistance(meters: number): { value: string; unit: string } {
+  if (meters >= 1000) {
+    return { value: (meters / 1000).toFixed(1), unit: 'km' };
+  }
+  return { value: Math.round(meters).toString(), unit: 'm' };
+}
+
 export default function Navigation({
   className,
   activeScenario,
@@ -17,7 +24,8 @@ export default function Navigation({
   activeScenario?: any;
   navData?: NavLive | null;
 }) {
-  const distance = navData ? Math.round(navData.distance_to_next_m) : 0;
+  const rawDistance = navData ? navData.distance_to_next_m : 0;
+  const dist = formatDistance(rawDistance);
   const nextTurn = navData?.next_instruction || 'AWAITING ROUTE';
   const street = navData?.current_street || '--';
   const eta = navData ? formatEta(navData.eta_remaining_s) : '--:--';
@@ -29,10 +37,10 @@ export default function Navigation({
     nextTurn.toUpperCase().includes('U-TURN') || nextTurn.toUpperCase().includes('U TURN')
       ? '⤴'
       : nextTurn.toUpperCase().includes('RIGHT')
-      ? '↱'
-      : nextTurn.toUpperCase().includes('LEFT')
-      ? '↰'
-      : '↑';
+        ? '↱'
+        : nextTurn.toUpperCase().includes('LEFT')
+          ? '↰'
+          : '↑';
 
   return (
     <div className={`bg-black/40 backdrop-blur-md border border-white/10 rounded-xl p-4 flex flex-col justify-between ${className}`}>
@@ -42,8 +50,8 @@ export default function Navigation({
 
       <div className="flex flex-col items-center justify-center my-4">
         <div className="text-6xl text-white font-bold tracking-tighter drop-shadow-[0_0_15px_rgba(0,240,255,0.3)]">
-          {isFinite(distance) ? distance : 0}
-          <span className="text-2xl text-gray-500 ml-1">m</span>
+          {dist.value}
+          <span className="text-2xl text-gray-500 ml-1">{dist.unit}</span>
         </div>
         <div className="flex items-center gap-3 mt-2">
           <div className="text-4xl text-cyan-400 font-bold">{arrow}</div>
