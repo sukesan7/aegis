@@ -4,6 +4,7 @@ import subprocess
 import networkx as nx
 import numpy as np
 import osmnx as ox
+from functools import lru_cache
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Tuple
@@ -11,20 +12,13 @@ import time
 
 router = APIRouter()
 
-# --- 1. GLOBAL GRAPH CACHE ---
-# Load an OpenStreetMap drive network once. Keep it unprojected so node/edge geometry
-# remains [lon, lat] for the frontend (MapLibre expects lng/lat).
-try:
-    # Use the official region name to avoid ambiguity.
-    # NOTE: first call will download OSM data (takes a bit); afterwards it's cached in memory.
-    G_GLOBAL = ox.graph_from_place(
-        "Regional Municipality of York, Ontario, Canada",
-        network_type="drive",
-        simplify=True,
-    )
-except Exception as e:
-    print(f"Graph Load Warning: {e}. Ensure you have an internet connection.")
-    G_GLOBAL = None
+# --- 1) OSMnx configuration ---
+# We deliberately DO NOT download a massive region-wide graph at import time.
+# That makes the UI feel "dead" (GO does nothing) while Python blocks.
+# Instead we fetch a *small bbox corridor* around start/end and cache it.
+ox.settings.use_cache = True
+ox.settings.cache_folder = os.path.join(os.path.dirname(__file__), "..", "..", "..", ".osmnx_cache")
+ox.settings.log_console = False
 
 
 AEGIS_ROUTE_ALGO = os.environ.get("AEGIS_ROUTE_ALGO", "dijkstra").lower()
@@ -56,6 +50,8 @@ class RouteResponse(BaseModel):
     execution_time_ms: float
     pivots_identified: List[PivotNode]
     path_coordinates: List[List[float]] # [lng, lat]
+    snapped_start: List[float] # [lng, lat]
+    snapped_end: List[float]   # [lng, lat]
     narrative: List[str]
 
 # --- 2. THE DUAN-MAO HEURISTIC ---
@@ -80,17 +76,31 @@ def find_duan_mao_pivots(G, path_nodes: List[int], k: int = 2) -> List[PivotNode
     return pivots
 
 
-def _truncate_graph_bbox(G, start: Coordinate, end: Coordinate, pad_deg: float = 0.03):
-    """Return a smaller subgraph around start/end to reduce algorithm runtime."""
+def _bbox_for_route(start: Coordinate, end: Coordinate, pad_deg: float = 0.02):
+    """Compute a bbox corridor around start/end.
+
+    pad_deg is a rough degree padding (~2km north/south in York Region latitude).
+    We keep it simple for hackathon speed.
+    """
     north = max(start.lat, end.lat) + pad_deg
     south = min(start.lat, end.lat) - pad_deg
     east = max(start.lng, end.lng) + pad_deg
     west = min(start.lng, end.lng) - pad_deg
-    try:
-        # truncate_by_edge keeps connectivity better for routes.
-        return ox.truncate.truncate_graph_bbox(G, north=north, south=south, east=east, west=west, truncate_by_edge=True)
-    except Exception:
-        return G
+    return north, south, east, west
+
+
+def _round_bbox(north: float, south: float, east: float, west: float, digits: int = 3):
+    """Round bbox to stabilize cache keys."""
+    return (round(north, digits), round(south, digits), round(east, digits), round(west, digits))
+
+
+@lru_cache(maxsize=16)
+def _load_graph_cached(north: float, south: float, east: float, west: float) -> nx.MultiDiGraph:
+    """Load a drive network for the bbox (cached)."""
+    # Keep it unprojected so geometry is lon/lat.
+    bbox = (west, south, east, north)  # (left, bottom, right, top)
+    G = ox.graph_from_bbox(bbox, network_type="drive", simplify=True)
+    return G
 
 
 def _edge_list_from_graph(G: nx.MultiDiGraph):
@@ -204,14 +214,13 @@ async def geocode(q: str = Query(..., min_length=3)):
 
 @router.post("/calculate", response_model=RouteResponse)
 async def calculate_route(req: RouteRequest):
-    if G_GLOBAL is None:
-        raise HTTPException(status_code=500, detail="Road Network Database Offline.")
-
     start_time = time.time()
     
     try:
-        # 1) Trim the graph to a corridor around start/end for speed (huge win in demos)
-        G = _truncate_graph_bbox(G_GLOBAL, req.start, req.end)
+        # 1) Fetch a small, cached road graph corridor (fast + doesn't block startup)
+        north, south, east, west = _bbox_for_route(req.start, req.end)
+        north, south, east, west = _round_bbox(north, south, east, west)
+        G = _load_graph_cached(north, south, east, west)
 
         # 2) Snap GPS to nearest road nodes (uses OSM one-ways / driveable roads)
         orig_node = ox.nearest_nodes(G, X=req.start.lng, Y=req.start.lat)
@@ -230,6 +239,10 @@ async def calculate_route(req: RouteRequest):
         # 4) Expand into dense polyline so the marker follows roads (not straight lines)
         route_coords = _route_coordinates(G, path)
 
+        # Marker should start/end snapped to the road network (not inside buildings)
+        snapped_start = [float(G.nodes[orig_node]["x"]), float(G.nodes[orig_node]["y"])]
+        snapped_end = [float(G.nodes[dest_node]["x"]), float(G.nodes[dest_node]["y"])]
+
         # 4. RUN HEURISTIC
         pivots = find_duan_mao_pivots(G, path)
         
@@ -242,6 +255,8 @@ async def calculate_route(req: RouteRequest):
             execution_time_ms=round(exec_ms, 2),
             pivots_identified=pivots,
             path_coordinates=route_coords,
+            snapped_start=snapped_start,
+            snapped_end=snapped_end,
             narrative=[
                 "Mission parameters uploaded to Nav-Com.",
                 f"Optimized path found in {round(exec_ms, 2)}ms.",

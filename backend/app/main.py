@@ -12,8 +12,14 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# CORS: Allow Frontend (localhost:3000) to talk to Backend (localhost:8000)
+# CORS: allow common dev server ports (Vite + legacy)
+# If you're using the Vite proxy (/api -> backend), CORS usually doesn't matter,
+# but this keeps things working if you hit the backend directly.
 origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",   # vite preview
+    "http://127.0.0.1:4173",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
