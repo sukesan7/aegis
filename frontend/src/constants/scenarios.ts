@@ -3,9 +3,9 @@ export const SCENARIOS = {
     title: "CODE 4 // CARDIAC ARREST",
     isRedAlert: true,
     vitals: { hr: 0, bp: { sys: 0, dia: 0 }, spO2: 70 },
-    dispatch: "UNIT 992: PATIENT UNRESPONSIVE. NO PULSE. CPR IN PROGRESS.",
+    dispatch: "Cardiac arrest, CPR in progress. Priority transport.",
     aiPrompt: "Confirmed Cardiac Arrest. Recommend immediate LUCAS deployment and ACLS protocol.",
-    location: { lat: 43.87, lng: -79.44 } // Near Mackenzie Health
+    location: { lat: 43.854, lng: -79.312 } // York University Markham
   },
   TRAUMA_MVA: {
     title: "CODE 3 // MAJOR TRAUMA",

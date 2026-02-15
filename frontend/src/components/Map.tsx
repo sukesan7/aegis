@@ -122,8 +122,7 @@ function computeNavLive(meta: {
   };
 }
 
-// Scenario data for tactical injections (duplicated from ScenarioInjector for inline use)
-// 1 University Blvd, Markham (YorkU)
+// York University — Markham campus (1 University Blvd)
 const YORK_U = { lat: 43.85421582751821, lng: -79.311760971958 };
 const MARKHAM_STOUFFVILLE = { lat: 43.880, lng: -79.231 }; // Approx MSH
 const MARKVILLE_MALL = { lat: 43.868, lng: -79.289 };
@@ -158,10 +157,12 @@ export default function LiveMap({
   activeScenario,
   onNavUpdate,
   onScenarioInject,
+  onScenarioClear,
 }: {
   activeScenario?: any;
   onNavUpdate?: (nav: NavLive) => void;
   onScenarioInject?: (s: any) => void;
+  onScenarioClear?: () => void;
 }) {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -266,7 +267,7 @@ export default function LiveMap({
     map.current = new maplibregl.Map({
       container: mapContainer.current,
       style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-      center: [-79.311760971958, 43.85421582751821],  // 1 University Blvd, Markham
+      center: [YORK_U.lng, YORK_U.lat],
       zoom: 16,
       pitch: 70,
     });
@@ -304,7 +305,7 @@ export default function LiveMap({
       </svg>
     `;
 
-    ambulanceMarker.current = new maplibregl.Marker({ element: el }).setLngLat([-79.311760971958, 43.85421582751821]).addTo(map.current);  // 1 University Blvd, Markham
+    ambulanceMarker.current = new maplibregl.Marker({ element: el }).setLngLat([YORK_U.lng, YORK_U.lat]).addTo(map.current);
 
     map.current.on('load', () => {
       map.current?.addSource('aegis-route', {
@@ -412,6 +413,24 @@ export default function LiveMap({
     }
 
     if (activeScenario?.end) {
+      // --- Full cleanup of any previous route/animation ---
+      if (animRef.current != null) {
+        cancelAnimationFrame(animRef.current);
+        animRef.current = null;
+      }
+      if (routeAbortRef.current) {
+        routeAbortRef.current.abort();
+        routeAbortRef.current = null;
+      }
+      routeRef.current = null;
+      setSimRunning(false);
+      setRouteReady(false);
+      setRouteCoordinates([]);
+      if (destMarker.current) { destMarker.current.remove(); destMarker.current = null; }
+      const routeSrc = map.current?.getSource('aegis-route') as any;
+      if (routeSrc) routeSrc.setData({ type: 'FeatureCollection', features: [] });
+      // --- End cleanup ---
+
       // Determine invalid/initial sequence
       setActiveWaypointIdx(activeScenario.waypoints ? 0 : -1);
 
@@ -426,7 +445,13 @@ export default function LiveMap({
       if (activeScenario.destName) setDestQuery(activeScenario.destName);
       // Use scenario start position for ambulance
       if (activeScenario.start && ambulanceMarker.current) {
-        ambulanceMarker.current.setLngLat([activeScenario.start.lng, activeScenario.start.lat]);
+        const startLng = activeScenario.start.lng;
+        const startLat = activeScenario.start.lat;
+        ambulanceMarker.current.setLngLat([startLng, startLat]);
+        // Move camera to start position and re-enable following
+        map.current?.jumpTo({ center: [startLng, startLat], zoom: 16, pitch: 70 });
+        setIsFollowing(true);
+        smoothBearingRef.current = null;
       }
       fetchRoute(end, true);  // auto-start without pre-set closures
       return;
@@ -452,7 +477,7 @@ export default function LiveMap({
       }
 
       const cur = ambulanceMarker.current?.getLngLat();
-      const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: 43.85421582751821, lng: -79.311760971958 };  // 1 University Blvd, Markham
+      const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: YORK_U.lat, lng: YORK_U.lng };
 
       const destination = endOverride ?? endPoint;
       if (!destination) {
@@ -615,6 +640,8 @@ export default function LiveMap({
     setSuggestions([]);
     setShowSuggestions(false);
     routeRef.current = null;
+    // Return to standby mode
+    onScenarioClear?.();
     // Clear roadblock state
     setActiveRoadblocks([]);
     roadblocksRef.current = [];
@@ -634,7 +661,7 @@ export default function LiveMap({
   const fetchBothAlgoStats = async () => {
     setIsFetchingStats(true);
     const cur = ambulanceMarker.current?.getLngLat();
-    const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: 43.85421582751821, lng: -79.311760971958 };  // 1 University Blvd, Markham
+    const start = cur ? { lat: cur.lat, lng: cur.lng } : { lat: YORK_U.lat, lng: YORK_U.lng };
     const body = {
       start,
       end: endPoint,
@@ -1039,6 +1066,8 @@ export default function LiveMap({
         ambulanceMarker.current.setLngLat(end);
         setCurrentPos(end);
         setSimRunning(false);
+        // Return to standby mode
+        onScenarioClear?.();
         // Clear auto-reroute on arrival
         if (rerouteIntervalRef.current) { clearInterval(rerouteIntervalRef.current); rerouteIntervalRef.current = null; }
         // Clear the route line — trip is done
@@ -1351,7 +1380,8 @@ export default function LiveMap({
                   <button
                     key={key}
                     onClick={() => {
-                      onScenarioInject?.(data);
+                      // Spread to create fresh reference so useEffect always re-fires
+                      onScenarioInject?.({ ...data });
                       if (data.isRedAlert) fetchAlgoRace(data);
                     }}
                     className={`w-full text-left px-3 py-2 text-[10px] font-mono font-bold rounded-lg border transition-all duration-300 hover:scale-[1.02] active:scale-95 ${data.isRedAlert
