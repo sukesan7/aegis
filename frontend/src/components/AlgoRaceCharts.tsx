@@ -199,7 +199,7 @@ export default function AlgoRaceCharts({ telemetry, dijkstraRoute, bmssspRoute }
           </ResponsiveContainer>
         </div>
         <div className="text-[9px] font-mono text-gray-400 mt-1">
-          This is eye-candy *and* a real talking point: different routes can have different “step size” profiles.
+          
         </div>
       </div>
     </div>
