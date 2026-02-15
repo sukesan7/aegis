@@ -13,6 +13,8 @@
 > **Not a medical device. Not for real patient care or live dispatch.**  
 > Aegis is a hackathon prototype built to demonstrate how modern routing + UI telemetry + AI can reduce cognitive load and improve arrival times in emergency response.
 
+![Demonstration Video](https://img.shields.io/badge/Demo-Video-gray)
+
 ---
 
 ## Executive summary
