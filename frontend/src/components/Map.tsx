@@ -152,17 +152,6 @@ const SCENARIOS: Record<string, any> = {
     vitals: { hr: 115, bp: '90/60', o2: 92 },
     patientOnBoard: false, // Starts false, becomes true after pickup
   },
-  ROUTINE_PATROL: {
-    title: 'ROUTINE PATROL // ZONE B',
-    isRedAlert: false,
-    start: YORK_U,
-    waypoints: [CINEPLEX_VIP, MARKVILLE_MALL],
-    end: MARKHAM_STOUFFVILLE,
-    destName: 'Patrol: Cineplex -> Markville -> MSH',
-    aiPrompt: 'Unit 992, proceed with routine patrol loop. No active incidents. Monitor Hz bands.',
-    vitals: null, // No patient
-    patientOnBoard: false,
-  },
 };
 
 export default function LiveMap({

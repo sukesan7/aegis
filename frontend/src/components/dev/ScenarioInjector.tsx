@@ -22,16 +22,6 @@ const SCENARIOS = {
     aiPrompt: "CRITICAL: Multi-vehicle accident on Hwy 404. Multiple trauma patients. Route to Sunnybrook Trauma Centre. Avoid 404 congestion using side-street pivots.",
     vitals: { hr: 115, bp: "90/60", o2: 92 },
   },
-  "ROUTINE_PATROL": {
-    title: "ROUTINE PATROL // ZONE B",
-    isRedAlert: false,
-    // Start: Richmond Hill Central
-    start: { lat: 43.8640, lng: -79.4000 },
-    // End: Station 92 Patrol
-    end: { lat: 43.8800, lng: -79.4000 },
-    aiPrompt: "Unit 992, proceed with routine patrol of Richmond Hill Zone B. Maintain low-latency uplink with mission control.",
-    vitals: { hr: 72, bp: "120/80", o2: 98 }
-  }
 };
 
 export default function ScenarioInjector({ onInject }: { onInject: (s: any) => void }) {

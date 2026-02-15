@@ -112,8 +112,7 @@ function App() {
     setActiveScenario(scenario);
 
     // 1. DETERMINE FILE NAME
-    const fileName = scenario.title.includes("ARREST") ? 'arrest.mp3' :
-      scenario.title.includes("TRAUMA") ? 'trauma.mp3' : 'routine.mp3';
+    const fileName = scenario.title.includes("ARREST") ? 'arrest.mp3' : 'trauma.mp3';
 
     // 2. CONSTRUCT WEB PATH
     const audioPath = `/audio/${fileName}`;
@@ -147,7 +146,7 @@ function App() {
           </h1>
           {audioError && (
             <div className="px-2 py-0.5 bg-red-900/40 border border-red-500 rounded text-red-400 text-[10px] font-mono animate-pulse">
-              AUDIO_BLOCKED: CLICK 'ROUTINE PATROL' TO UNLOCK
+              AUDIO_BLOCKED: CLICK HEADER TO UNLOCK
             </div>
           )}
         </div>
@@ -167,7 +166,7 @@ function App() {
             }}
             className={`px-4 py-1 rounded border font-mono text-xs transition-all ${isRedAlert ? 'bg-red-600 text-white border-red-500 animate-pulse shadow-[0_0_15px_rgba(220,38,38,0.5)]' : 'bg-transparent text-gray-400 border-gray-700 hover:border-white'}`}
           >
-            {isRedAlert ? '⚠ CRITICAL TRAUMA' : 'ROUTINE PATROL'}
+            {isRedAlert ? '⚠ CRITICAL TRAUMA' : 'STANDBY'}
           </button>
         </div>
       </header>
