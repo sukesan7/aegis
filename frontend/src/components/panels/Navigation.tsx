@@ -48,14 +48,14 @@ export default function Navigation({
         NAV-COM // MISSION_STATE
       </h2>
 
-      <div className="flex flex-col items-center justify-center my-4">
-        <div className="text-6xl text-white font-bold tracking-tighter drop-shadow-[0_0_15px_rgba(0,240,255,0.3)]">
+      <div className="flex flex-col items-center justify-center my-2">
+        <div className="text-4xl text-white font-bold tracking-tighter drop-shadow-[0_0_15px_rgba(0,240,255,0.3)]">
           {dist.value}
-          <span className="text-2xl text-gray-500 ml-1">{dist.unit}</span>
+          <span className="text-lg text-gray-500 ml-1">{dist.unit}</span>
         </div>
-        <div className="flex items-center gap-3 mt-2">
-          <div className="text-4xl text-cyan-400 font-bold">{arrow}</div>
-          <div className="text-base text-cyan-300 font-mono font-bold text-center max-w-[220px] leading-tight">
+        <div className="flex items-center gap-2 mt-1">
+          <div className="text-2xl text-cyan-400 font-bold">{arrow}</div>
+          <div className="text-sm text-cyan-300 font-mono font-bold text-center max-w-[220px] leading-tight">
             {nextTurn}
           </div>
         </div>

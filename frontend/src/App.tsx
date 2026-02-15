@@ -193,9 +193,9 @@ function App() {
 
         <div className="col-span-3 flex flex-col gap-4 h-full min-h-0">
           {/* SYNC: Passing activeScenario to Navigation for Turn-by-Turn */}
-          <Navigation className="h-1/4 shrink-0" activeScenario={activeScenario} navData={navData} />
-          <PatientVitals className="flex-[2] min-h-0" scenarioData={activeScenario?.vitals} />
-          <HospitalInfo className="flex-1 min-h-0" />
+          <Navigation className="shrink-0" activeScenario={activeScenario} navData={navData} />
+          <PatientVitals className="flex-[3] min-h-0" scenarioData={activeScenario?.vitals} />
+          <HospitalInfo className="flex-[2] min-h-0" />
         </div>
       </main>
 
