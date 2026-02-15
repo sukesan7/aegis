@@ -124,7 +124,8 @@ function computeNavLive(meta: {
 
 // York University — Markham campus (1 University Blvd)
 const YORK_U = { lat: 43.85421582751821, lng: -79.311760971958 };
-const MARKHAM_STOUFFVILLE = { lat: 43.880, lng: -79.231 }; // Approx MSH
+// Markham Stouffville Hospital
+const MARKHAM_STOUFFVILLE = { lat: 43.88490014913164, lng: -79.23290206069066 }; // Precise MSH
 const MARKVILLE_MALL = { lat: 43.868, lng: -79.289 };
 const CINEPLEX_VIP = { lat: 43.856, lng: -79.336 }; // Approx Cineplex VIP Markham
 
@@ -148,7 +149,7 @@ const SCENARIOS: Record<string, any> = {
     end: MARKHAM_STOUFFVILLE,
     destName: 'Markville Mall -> Markham Stouffville',
     aiPrompt: 'CRITICAL: MVA at Markville Mall. Proceed to scene, stabilize, and transport to Markham Stouffville. Vitals pending patient contact.',
-    vitals: { hr: 115, bp: '90/60', o2: 92 },
+    vitals: { hr: 135, bp: { sys: 90, dia: 60 }, spO2: 94 },
     patientOnBoard: false, // Starts false, becomes true after pickup
   },
 };
@@ -239,6 +240,9 @@ export default function LiveMap({
   const onNavUpdateRef = useRef<typeof onNavUpdate>(onNavUpdate);
   const routeAbortRef = useRef<AbortController | null>(null);
   const prevScenarioRef = useRef<any>(null);
+  const prevScenarioTitleRef = useRef<string | undefined>(undefined);
+  const prevPatientStatusRef = useRef<boolean | undefined>(undefined);
+  const activeWaypointIdxRef = useRef(activeWaypointIdx);
 
   // Route meta ref (provided by backend)
   const routeRef = useRef<{
@@ -260,6 +264,11 @@ export default function LiveMap({
   useEffect(() => {
     onNavUpdateRef.current = onNavUpdate;
   }, [onNavUpdate]);
+
+  // Sync activeWaypointIdx to ref for animation loop access without restarts
+  useEffect(() => {
+    activeWaypointIdxRef.current = activeWaypointIdx;
+  }, [activeWaypointIdx]);
 
   useEffect(() => {
     if (map.current || !mapContainer.current) return;
@@ -399,6 +408,14 @@ export default function LiveMap({
     roadblockStopIdx.current = null;
     pendingRerouteRef.current = null;
     if (rerouteIntervalRef.current) { clearInterval(rerouteIntervalRef.current); rerouteIntervalRef.current = null; }
+
+    // Prevent full reset if this is just a status update (e.g. patient pickup)
+    if (activeScenario?.title === prevScenarioTitleRef.current && activeScenario?.patientOnBoard !== prevPatientStatusRef.current) {
+      prevPatientStatusRef.current = activeScenario?.patientOnBoard;
+      return;
+    }
+    prevScenarioTitleRef.current = activeScenario?.title;
+    prevPatientStatusRef.current = activeScenario?.patientOnBoard;
 
     // Clear road closure markers
     const closureSrc = map.current?.getSource('road-closures') as any;
@@ -693,7 +710,8 @@ export default function LiveMap({
 
   // Fetch both algorithms with exploration data for the algorithm race mini-map
   // MARKHAM STOUFFVILLE HOSPITAL — always the target for the algo race
-  const MARKHAM_STOUFFVILLE_HOSPITAL = { lat: 43.8330, lng: -79.2580 };
+  // MARKHAM STOUFFVILLE HOSPITAL — always the target for the algo race
+  const MARKHAM_STOUFFVILLE_HOSPITAL = { lat: 43.88490014913164, lng: -79.23290206069066 };
 
   const fetchAlgoRace = async (scenario: any) => {
     try {
@@ -1084,16 +1102,18 @@ export default function LiveMap({
 
         // Check for waypoints logic
         const sc = scenarioRef.current;
-        if (sc && sc.waypoints && activeWaypointIdx >= 0) {
+        const currentIdx = activeWaypointIdxRef.current; // access via ref to avoid stale closure or effect restarts
+
+        if (sc && sc.waypoints && currentIdx >= 0) {
           // Arrived at a waypoint. Wait 5s then go to next.
           setTimeout(() => {
             // If this is MVA Trauma and we just finished the first leg (pickup at Markville), 
             // update the scenario state to 'patientOnBoard' BEFORE routing to hospital.
-            if (sc.title && sc.title.includes('MVA') && activeWaypointIdx === 0 && onScenarioInject) {
+            if (sc.title && sc.title.includes('MVA') && currentIdx === 0 && onScenarioInject) {
               onScenarioInject({ ...sc, patientOnBoard: true });
             }
 
-            const nextIdx = activeWaypointIdx + 1;
+            const nextIdx = currentIdx + 1;
             if (nextIdx < sc.waypoints.length) {
               // Go to next waypoint
               setActiveWaypointIdx(nextIdx);
@@ -1228,7 +1248,8 @@ export default function LiveMap({
       if (animRef.current != null) cancelAnimationFrame(animRef.current);
       animRef.current = null;
     };
-  }, [routeCoordinates, activeWaypointIdx, activeScenario]);
+    // Removed activeScenario and activeWaypointIdx from deps so animation doesn't restart/reset position on status updates
+  }, [routeCoordinates]);
 
   return (
     <div className="w-full h-full relative">

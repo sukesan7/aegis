@@ -5,11 +5,11 @@ const SCENARIOS = {
   "CARDIAC_ARREST": {
     title: "CARDIAC ARREST // UNIT 992",
     isRedAlert: true,
-    // Start: Major Mac & Jane St
-    start: { lat: 43.8580, lng: -79.5400 },
-    // End: Mackenzie Health Emergency Bay
-    end: { lat: 43.8710, lng: -79.4440 },
-    aiPrompt: "URGENT: 65yo Male, Cardiac Arrest at Major Mackenzie and Jane. CPR in progress. Route to Mackenzie Health immediately via optimized Duan-Mao pivots.",
+    // Start: Highway 7 & Warden
+    start: { lat: 43.8580, lng: -79.3100 },
+    // End: Markham Stouffville Hospital
+    end: { lat: 43.88490014913164, lng: -79.23290206069066 },
+    aiPrompt: "URGENT: 65yo Male, Cardiac Arrest. Route to Markham Stouffville Hospital immediately.",
     vitals: { hr: 0, bp: "0/0", o2: 45 },
   },
   "MVA_TRAUMA": {

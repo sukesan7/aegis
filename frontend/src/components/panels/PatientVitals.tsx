@@ -6,13 +6,17 @@ interface VitalsData {
   bp: { sys: number; dia: number };
 }
 
-export default function PatientVitals({ className, scenarioData, scenarioTitle }: { className?: string; scenarioData?: VitalsData; scenarioTitle?: string }) {
+export default function PatientVitals({ className, scenarioData, scenarioTitle, patientOnBoard }: { className?: string; scenarioData?: VitalsData; scenarioTitle?: string; patientOnBoard?: boolean }) {
   const [hr, setHr] = useState(75);
   const [spO2, setSpO2] = useState(98);
   const [bp, setBp] = useState({ sys: 120, dia: 80 });
   const [ecgData, setEcgData] = useState<number[]>(new Array(50).fill(50));
 
   const isCardiacArrest = scenarioTitle?.toUpperCase().includes('ARREST') || scenarioTitle?.toUpperCase().includes('CARDIAC');
+  const isMVATrauma = scenarioTitle?.toUpperCase().includes('TRAUMA') || scenarioTitle?.toUpperCase().includes('MVA');
+
+  // Determine if we should show vitals or standby
+  const showVitals = isCardiacArrest || (isMVATrauma && patientOnBoard);
 
   useEffect(() => {
     if (scenarioData) {
@@ -24,6 +28,8 @@ export default function PatientVitals({ className, scenarioData, scenarioTitle }
 
   // Simulation Loop
   useEffect(() => {
+    if (!showVitals) return;
+
     const interval = setInterval(() => {
       setHr(prev => prev === 0 ? 0 : prev + (Math.floor(Math.random() * 3) - 1));
       setSpO2(prev => Math.min(100, prev + (Math.floor(Math.random() * 2) - 0.5)));
@@ -52,7 +58,7 @@ export default function PatientVitals({ className, scenarioData, scenarioTitle }
     }, 100);
 
     return () => clearInterval(interval);
-  }, [hr]);
+  }, [hr, showVitals]);
 
   return (
     <div className={`bg-black/40 backdrop-blur-md border border-white/10 rounded-xl p-4 flex flex-col ${className}`}>
@@ -62,12 +68,12 @@ export default function PatientVitals({ className, scenarioData, scenarioTitle }
           PATIENT VITALS
         </h2>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-gray-500 font-mono">{scenarioTitle ? 'CONNECTION: STABLE' : 'STANDBY'}</span>
-          <div className={`w-2 h-2 rounded-full animate-pulse ${!scenarioTitle ? 'bg-gray-500 shadow-[0_0_10px_#6b7280]' : hr === 0 ? 'bg-red-500 shadow-[0_0_10px_#ff0000]' : 'bg-green-500 shadow-[0_0_10px_#00ff00]'}`} />
+          <span className="text-[10px] text-gray-500 font-mono">{showVitals ? 'CONNECTION: STABLE' : 'STANDBY'}</span>
+          <div className={`w-2 h-2 rounded-full animate-pulse ${!showVitals ? 'bg-gray-500 shadow-[0_0_10px_#6b7280]' : hr === 0 ? 'bg-red-500 shadow-[0_0_10px_#ff0000]' : 'bg-green-500 shadow-[0_0_10px_#00ff00]'}`} />
         </div>
       </div>
 
-      {/* Standby mode - no patient */}
+      {/* Standby mode - no scenario */}
       {!scenarioTitle && (
         <div className="flex-1 flex flex-col items-center justify-center text-center py-8">
           <div className="text-gray-600 text-3xl mb-3">🚑</div>
@@ -76,13 +82,31 @@ export default function PatientVitals({ className, scenarioData, scenarioTitle }
         </div>
       )}
 
-      {scenarioTitle && (<>
+      {/* En Route Mode - Scenario active but patient not onboard (MVA only) */}
+      {scenarioTitle && isMVATrauma && !patientOnBoard && (
+        <div className="flex-1 flex flex-col items-center justify-center text-center py-8">
+          <div className="text-yellow-600 text-3xl mb-3 animate-pulse">⚡</div>
+          <div className="text-yellow-500 font-mono text-sm tracking-wider uppercase mb-1">EN ROUTE TO SCENE</div>
+          <div className="text-yellow-600/70 font-mono text-[10px] tracking-wide">VITALS PENDING CONTACT</div>
+        </div>
+      )}
+
+      {showVitals && (<>
 
         {/* Critical notes banner for cardiac arrest */}
         {isCardiacArrest && (
           <div className="mb-3 px-3 py-1.5 bg-red-950/40 border border-red-500/50 rounded-lg animate-pulse">
             <div className="text-red-400 text-[10px] font-mono font-bold tracking-wider text-center">
               ⚠ CPR ACTIVE • AIRWAY SUPPORT • DEFIB READY ⚠
+            </div>
+          </div>
+        )}
+
+        {/* Critical notes banner for trauma */}
+        {isMVATrauma && (
+          <div className="mb-3 px-3 py-1.5 bg-orange-950/40 border border-orange-500/50 rounded-lg animate-pulse">
+            <div className="text-orange-400 text-[10px] font-mono font-bold tracking-wider text-center">
+              Suspected hemorrhage • Immobilization • Monitor shock
             </div>
           </div>
         )}
@@ -129,7 +153,7 @@ export default function PatientVitals({ className, scenarioData, scenarioTitle }
           </div>
           <div className="text-right">
             <div className="text-[10px] text-gray-500">PATIENT ID</div>
-            <div className="text-xs text-cyan-400 font-mono">#992-AX-YORK</div>
+            <div className="text-xs text-cyan-400 font-mono">{isMVATrauma ? '#TRAUMA-99' : '#992-AX-YORK'}</div>
           </div>
         </div>
 

@@ -178,7 +178,7 @@ function App() {
 
       <main className="flex-1 min-h-0 p-4 grid grid-cols-12 gap-4 relative z-10">
         <div className="col-span-3 flex flex-col gap-4 h-full min-h-0">
-          <DispatchFeed className="h-48 shrink-0" scenarioTitle={activeScenario?.title} />
+          <DispatchFeed className="h-48 shrink-0" scenarioTitle={activeScenario?.title} patientOnBoard={activeScenario?.patientOnBoard} />
           <AIAssistant
             ref={aiRef}
             className={`flex-1 min-h-0 transition-all duration-500 border-cyan-500/30 shadow-[0_0_40px_rgba(0,240,255,0.2)] ${isRedAlert ? 'shadow-[0_0_60px_rgba(239,68,68,0.3)]' : ''}`}
@@ -198,7 +198,12 @@ function App() {
         <div className="col-span-3 flex flex-col gap-4 h-full min-h-0">
           {/* SYNC: Passing activeScenario to Navigation for Turn-by-Turn */}
           <Navigation className="shrink-0" activeScenario={activeScenario} navData={navData} />
-          <PatientVitals className="flex-[3] min-h-0" scenarioData={activeScenario?.vitals} scenarioTitle={activeScenario?.title} />
+          <PatientVitals
+            className="flex-[3] min-h-0"
+            scenarioData={activeScenario?.vitals}
+            scenarioTitle={activeScenario?.title}
+            patientOnBoard={activeScenario?.patientOnBoard}
+          />
           <HospitalInfo className="flex-[2] min-h-0" />
         </div>
       </main>
