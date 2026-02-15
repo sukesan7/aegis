@@ -233,6 +233,7 @@ export default function LiveMap({
   const animRef = useRef<number | null>(null);
   const startTimeRef = useRef<number>(0);
   const followRef = useRef<boolean>(true);
+  const smoothBearingRef = useRef<number | null>(null);
   const scenarioRef = useRef<any>(null);
   const onNavUpdateRef = useRef<typeof onNavUpdate>(onNavUpdate);
   const routeAbortRef = useRef<AbortController | null>(null);
@@ -847,6 +848,16 @@ export default function LiveMap({
       const finalTotalDist = finalCumDist[finalCumDist.length - 1];
       const finalTotalTime = finalCumTime[finalCumTime.length - 1];
 
+      // Normalize cumTime to constant speed: this prevents jarring speed changes
+      // between the backtracking transition and the new route's varying road speeds.
+      // Visual speed = totalDist / totalTime applied uniformly across all segments.
+      if (finalTotalDist > 0 && finalTotalTime > 0) {
+        const constantSpeed = finalTotalDist / finalTotalTime; // m/s
+        for (let k = 1; k < finalCumTime.length; k++) {
+          finalCumTime[k] = finalCumDist[k] / constantSpeed;
+        }
+      }
+
       // QUEUE the reroute — don't apply it yet.
       // The animation tick will apply it when the ambulance reaches the roadblock.
       pendingRerouteRef.current = {
@@ -1140,11 +1151,23 @@ export default function LiveMap({
       );
       onNavUpdateRef.current?.(nav);
 
-      const brg = bearingDeg(a, b);
+      const rawBrg = bearingDeg(a, b);
+
+      // Smooth bearing: exponential interpolation to avoid snappy rotation
+      if (smoothBearingRef.current === null) {
+        smoothBearingRef.current = rawBrg;
+      } else {
+        // Shortest-angle lerp
+        let delta = rawBrg - smoothBearingRef.current;
+        if (delta > 180) delta -= 360;
+        if (delta < -180) delta += 360;
+        smoothBearingRef.current += delta * 0.15; // lower = smoother (0.15 = very smooth)
+      }
+      const brg = smoothBearingRef.current;
 
       // Dynamic zoom/pitch for turn-awareness
-      const BASE_ZOOM = 16;
-      const TURN_ZOOM = 17;
+      const BASE_ZOOM = 15;
+      const TURN_ZOOM = 16;
       const TURN_DIST_THRESHOLD = 100; // start zooming in 100m before turn
 
       let targetZoom = BASE_ZOOM;
@@ -1162,7 +1185,7 @@ export default function LiveMap({
           center: pos,
           bearing: brg,
           zoom: targetZoom,
-          duration: 500,
+          duration: 200,
           easing: (x) => x,
           essential: true,
         });

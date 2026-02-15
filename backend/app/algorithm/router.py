@@ -186,9 +186,9 @@ def _default_speed_kph(highway: Any) -> float:
     if "tertiary" in h:
         return 55.0
     if "residential" in h:
-        return 40.0
+        return 50.0
     if "service" in h:
-        return 25.0
+        return 35.0
     return 50.0
 
 
