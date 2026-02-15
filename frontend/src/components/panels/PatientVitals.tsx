@@ -63,7 +63,7 @@ export default function PatientVitals({ className, scenarioData }: { className?:
   }, [hr]); // Re-run effect if hr changes to update beat timing
 
   return (
-    <div className={`bg-black/40 backdrop-blur-md border border-white/10 rounded-xl p-4 flex flex-col ${className}`}>
+    <div className={`bg-black/40 backdrop-blur-md border border-white/10 rounded-xl p-3 flex flex-col overflow-hidden ${className}`}>
       {/* Header */}
       <div className="flex justify-between items-center border-b border-white/5 pb-2 mb-2">
         <h2 className="text-cyan-400 font-mono text-sm tracking-widest uppercase">
@@ -76,24 +76,24 @@ export default function PatientVitals({ className, scenarioData }: { className?:
       </div>
 
       {/* Main Stats Grid */}
-      <div className="grid grid-cols-2 gap-4 mb-4">
+      <div className="grid grid-cols-2 gap-2 mb-2">
         <div className={`border p-2 rounded relative overflow-hidden transition-colors ${hr === 0 ? 'bg-red-950/40 border-red-500' : 'bg-red-950/20 border-red-900/30'}`}>
           <div className="text-red-500 text-[10px] font-mono">HEART RATE (BPM)</div>
-          <div className="text-4xl text-red-500 font-bold font-mono">{Math.round(hr)}</div>
+          <div className="text-2xl text-red-500 font-bold font-mono">{Math.round(hr)}</div>
           {hr > 0 && <div className="absolute top-2 right-2 text-red-500/50 text-xs animate-ping">♥</div>}
         </div>
 
         <div className="bg-blue-950/20 border border-blue-900/30 p-2 rounded">
           <div className="text-blue-400 text-[10px] font-mono">SpO2 (%)</div>
-          <div className="text-4xl text-blue-400 font-bold font-mono">{Math.round(spO2)}%</div>
+          <div className="text-2xl text-blue-400 font-bold font-mono">{Math.round(spO2)}%</div>
         </div>
       </div>
 
       {/* BP & Info */}
-      <div className="flex justify-between items-end mb-4 bg-white/5 p-2 rounded">
+      <div className="flex justify-between items-end mb-2 bg-white/5 p-2 rounded">
         <div>
           <div className="text-gray-400 text-[10px] font-mono">BLOOD PRESSURE</div>
-          <div className="text-2xl text-white font-mono">{Math.round(bp.sys)}/{Math.round(bp.dia)} <span className="text-xs text-gray-500">mmHg</span></div>
+          <div className="text-lg text-white font-mono">{Math.round(bp.sys)}/{Math.round(bp.dia)} <span className="text-xs text-gray-500">mmHg</span></div>
         </div>
         <div className="text-right">
           <div className="text-[10px] text-gray-500">PATIENT ID</div>
@@ -102,7 +102,7 @@ export default function PatientVitals({ className, scenarioData }: { className?:
       </div>
 
       {/* ECG Graph Visualization */}
-      <div className="flex-1 min-h-[120px] bg-black/50 rounded border border-white/10 relative overflow-hidden flex items-center">
+      <div className="flex-1 min-h-0 bg-black/50 rounded border border-white/10 relative overflow-hidden flex items-center">
         <div className="absolute inset-0 opacity-20"
           style={{ backgroundImage: 'linear-gradient(#00f0ff 1px, transparent 1px), linear-gradient(90deg, #00f0ff 1px, transparent 1px)', backgroundSize: '10px 10px' }}>
         </div>

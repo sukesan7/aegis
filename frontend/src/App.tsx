@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { AnimatePresence } from 'framer-motion';
 import LiveMap from './components/Map';
 import AIAssistant from './components/panels/AIAssistant';
 import PatientVitals from './components/panels/PatientVitals';
 import Navigation from './components/panels/Navigation';
 import DispatchFeed from './components/panels/DispatchFeed';
 import HospitalInfo from './components/panels/HospitalInfo';
+import WelcomeScreen from './components/WelcomeScreen';
 
 // Error Boundary to catch LiveMap crashes
 class MapErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: Error | null }> {
@@ -91,6 +93,7 @@ const EquipmentPanel = ({ forceOpen, isRedAlert }: { forceOpen?: boolean, isRedA
 
 // --- MAIN APPLICATION ---
 function App() {
+  const [showWelcome, setShowWelcome] = useState(true);
   const [isRedAlert, setIsRedAlert] = useState(false);
   const [activeScenario, setActiveScenario] = useState<any>(null);
   const [navData, setNavData] = useState<any>(null);
@@ -138,6 +141,11 @@ function App() {
 
   return (
     <div className={`w-screen h-screen overflow-hidden flex flex-col transition-all duration-700 ${isRedAlert ? 'bg-red-950/20' : 'bg-[#050505]'}`}>
+
+      {/* Welcome Screen Overlay */}
+      <AnimatePresence>
+        {showWelcome && <WelcomeScreen onComplete={() => setShowWelcome(false)} />}
+      </AnimatePresence>
 
       <header className="h-14 shrink-0 border-b border-white/10 bg-black/50 backdrop-blur-lg flex items-center justify-between px-6 z-50">
         <div className="flex items-center gap-4">

@@ -2,7 +2,7 @@ import React from 'react';
 
 export default function HospitalInfo({ className }: { className?: string }) {
     return (
-        <div className={`bg-black/40 backdrop-blur-md border border-white/10 rounded-xl p-3 flex flex-col ${className}`}>
+        <div className={`bg-black/40 backdrop-blur-md border border-white/10 rounded-xl p-3 flex flex-col overflow-hidden ${className}`}>
             {/* Header */}
             <div className="flex justify-between items-center border-b border-white/5 pb-2 mb-2">
                 <h2 className="text-cyan-400 font-mono text-sm tracking-widest uppercase">
@@ -15,7 +15,7 @@ export default function HospitalInfo({ className }: { className?: string }) {
             </div>
 
             {/* Stats Grid */}
-            <div className="flex-1 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[10px] font-mono content-start">
+            <div className="flex-1 grid grid-cols-2 gap-x-4 gap-y-1 text-[10px] font-mono content-start">
                 {/* Bed Capacity */}
                 <div className="text-gray-500 uppercase">Beds</div>
                 <div className="text-right">
