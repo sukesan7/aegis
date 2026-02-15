@@ -165,6 +165,7 @@ function App() {
             <div className="text-white font-mono text-sm">{time.toLocaleTimeString([], { hour12: false })}</div>
             <div className="text-gray-500 text-[10px] font-mono uppercase">{time.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}</div>
           </div>
+
           <button
             onClick={() => {
               // PRIME AUDIO CONTEXT
@@ -193,7 +194,12 @@ function App() {
         <div className="col-span-6 h-full relative rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-black/20">
           {/* SYNC: Passing activeScenario to Map for 3D Driver View */}
           <MapErrorBoundary>
-            <LiveMap activeScenario={activeScenario} onNavUpdate={setNavData} onScenarioInject={handleScenarioInject} onScenarioClear={handleScenarioClear} />
+            <LiveMap
+              activeScenario={activeScenario}
+              onNavUpdate={setNavData}
+              onScenarioInject={handleScenarioInject}
+              onScenarioClear={handleScenarioClear}
+            />
           </MapErrorBoundary>
           <div className="absolute top-0 left-0 w-full h-24 bg-gradient-to-b from-black/80 to-transparent pointer-events-none" />
           <div className="absolute bottom-0 left-0 w-full h-24 bg-gradient-to-t from-black/80 to-transparent pointer-events-none" />

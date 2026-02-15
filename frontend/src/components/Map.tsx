@@ -3,6 +3,7 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import axios from 'axios';
 import AlgoRaceMiniMap, { AlgoRaceData } from './AlgoRaceMiniMap';
+import { OSMOWS_LOCATIONS } from '../constants/OsmowsLocations';
 
 type LatLng = { lat: number; lng: number };
 
@@ -170,6 +171,14 @@ export default function LiveMap({
   const ambulanceMarker = useRef<maplibregl.Marker | null>(null);
   const destMarker = useRef<maplibregl.Marker | null>(null);
 
+
+
+  // Osmows markers refs
+  const osmowsMarkersRef = useRef<maplibregl.Marker[]>([]);
+
+  // Osmows tracking
+  const visitedOsmows = useRef<Set<number>>(new Set());
+
   const [routeCoordinates, setRouteCoordinates] = useState<[number, number][]>([]);
   const [currentPos, setCurrentPos] = useState<[number, number] | null>(null);
 
@@ -194,6 +203,9 @@ export default function LiveMap({
   // Algorithm Race Mini-Map
   const [algoRaceData, setAlgoRaceData] = useState<AlgoRaceData | null>(null);
   const [showAlgoRace, setShowAlgoRace] = useState(false);
+
+  // Easter Egg Mode
+  const [isOsmowsMode, setIsOsmowsMode] = useState(false);
 
   // Dynamic Roadblock Injection
   const [activeRoadblocks, setActiveRoadblocks] = useState<[number, number][]>([]);
@@ -269,6 +281,26 @@ export default function LiveMap({
   useEffect(() => {
     activeWaypointIdxRef.current = activeWaypointIdx;
   }, [activeWaypointIdx]);
+
+  // Toggle Osmows visibility based on mode
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Clear existing DOM markers
+    osmowsMarkersRef.current.forEach(m => m.remove());
+    osmowsMarkersRef.current = [];
+
+    if (isOsmowsMode) {
+      OSMOWS_LOCATIONS.forEach((loc) => {
+        // Use standard marker with red color - most reliable
+        const marker = new maplibregl.Marker({ color: '#ef4444' })
+          .setLngLat([loc.lng, loc.lat])
+          .addTo(map.current!);
+
+        osmowsMarkersRef.current.push(marker);
+      });
+    }
+  }, [isOsmowsMode]);
 
   useEffect(() => {
     if (map.current || !mapContainer.current) return;
@@ -361,6 +393,10 @@ export default function LiveMap({
         },
       });
 
+      // Osmows markers - REMOVED LAYER APPROACH, USING DOM MARKERS NOW
+      // Logic handled in isOsmowsMode useEffect
+
+
       // Don't auto-route on load — wait for user to search a destination
 
       // Defer 3D buildings so they don't block the initial animation
@@ -408,6 +444,9 @@ export default function LiveMap({
     roadblockStopIdx.current = null;
     pendingRerouteRef.current = null;
     if (rerouteIntervalRef.current) { clearInterval(rerouteIntervalRef.current); rerouteIntervalRef.current = null; }
+
+    // Reset visited Osmows on new scenario
+    visitedOsmows.current.clear();
 
     // Prevent full reset if this is just a status update (e.g. patient pickup)
     if (activeScenario?.title === prevScenarioTitleRef.current && activeScenario?.patientOnBoard !== prevPatientStatusRef.current) {
@@ -1454,7 +1493,69 @@ export default function LiveMap({
         >
           {showEtaPanel ? '✕ DEV' : '⚙ DEV'}
         </button>
+
+        {/* EASTER EGG TRIGGER */}
+        {showEtaPanel && (
+          <button
+            onClick={() => {
+              setIsOsmowsMode(true);
+              // Zoom out to show York Region
+              map.current?.flyTo({
+                center: [-79.3117, 43.8542], // York U center approx
+                zoom: 11,
+                pitch: 0,
+                bearing: 0,
+                essential: true
+              });
+            }}
+            className="px-3 py-1.5 rounded-lg border border-orange-500/30 bg-orange-500/10 text-orange-400 text-xs font-mono font-bold hover:bg-orange-500/30 transition-all"
+            title="Deploy Tactical Nutrition"
+          >
+            🌯
+          </button>
+        )}
       </div>
+
+      {/* EASTER EGG OVERLAY */}
+      {isOsmowsMode && (
+        <div className="absolute inset-0 z-[100] flex flex-col items-center justify-start pointer-events-none pt-12">
+          {/* Dark vignette to focus on map - removing this to not obscure map */}
+          {/* <div className="absolute inset-0 bg-black/40 pointer-events-auto" /> */}
+
+          <div className="relative z-10 p-6 flex flex-col items-center gap-3 text-center bg-black/90 backdrop-blur-md rounded-2xl border border-orange-500/30 shadow-[0_0_50px_rgba(249,115,22,0.3)] max-w-sm pointer-events-auto">
+
+            {/* Close X Button */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsOsmowsMode(false);
+                if (ambulanceMarker.current) {
+                  const pos = ambulanceMarker.current.getLngLat();
+                  map.current?.flyTo({
+                    center: pos,
+                    zoom: 16,
+                    pitch: 70,
+                    bearing: smoothBearingRef.current || 0,
+                    essential: true
+                  });
+                }
+              }}
+              className="absolute top-2 right-2 p-2 text-gray-400 hover:text-white hover:bg-white/10 rounded-full transition-all cursor-pointer z-50"
+            >
+              ✕
+            </button>
+
+            <h2 className="text-xl font-black text-orange-500 tracking-tighter uppercase drop-shadow-[0_0_15px_rgba(249,115,22,0.8)] leading-none text-center">
+              NUTRITIONAL<br />DEFICIT DETECTED
+            </h2>
+
+            <p className="text-gray-300 font-mono text-xs leading-relaxed">
+              CRITICAL: <span className="text-orange-400 font-bold">OSMOW'S</span> LEVEL CRITICALLY LOW. <br />
+              PLEASE REFUEL AT THE NEAREST LOCATION ASAP.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Algorithm Race Mini-Map (bottom-right) */}
       <AlgoRaceMiniMap data={algoRaceData} visible={showAlgoRace} />
