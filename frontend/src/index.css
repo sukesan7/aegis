@@ -6,15 +6,18 @@
 ::-webkit-scrollbar {
   width: 8px;
 }
+
 ::-webkit-scrollbar-track {
-  background: #000; 
+  background: #000;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: #333; 
+  background: #333;
   border-radius: 4px;
 }
+
 ::-webkit-scrollbar-thumb:hover {
-  background: #00f0ff; 
+  background: #00f0ff;
 }
 
 /* RED ALERT OVERRIDES */
@@ -24,7 +27,8 @@ body.red-alert {
 
 /* Force Cyan Text to turn Red */
 body.red-alert .text-cyan-400 {
-  color: #ef4444 !important; /* Tailwind Red-500 */
+  color: #ef4444 !important;
+  /* Tailwind Red-500 */
   text-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
 }
 
@@ -38,4 +42,86 @@ body.red-alert .border-white\/10 {
 /* Force Backgrounds to pulse Red */
 body.red-alert .bg-cyan-950\/30 {
   background-color: rgba(69, 10, 10, 0.4) !important;
+}
+
+/* ====== WELCOME SCREEN ANIMATIONS ====== */
+
+/* Fingerprint glow pulse */
+.welcome-fingerprint {
+  animation: fingerprintPulse 2.5s ease-in-out infinite;
+  box-shadow: 0 0 20px rgba(0, 240, 255, 0.15), 0 0 40px rgba(0, 240, 255, 0.05);
+}
+
+.welcome-fingerprint:hover {
+  box-shadow: 0 0 30px rgba(0, 240, 255, 0.3), 0 0 60px rgba(0, 240, 255, 0.1);
+  transform: scale(1.05);
+}
+
+.welcome-fingerprint-scanning {
+  animation: fingerprintScan 0.6s ease-in-out infinite !important;
+  box-shadow: 0 0 40px rgba(0, 240, 255, 0.4), 0 0 80px rgba(0, 240, 255, 0.2) !important;
+}
+
+.welcome-fingerprint-authenticated {
+  animation: none !important;
+  box-shadow: 0 0 30px rgba(34, 197, 94, 0.4), 0 0 60px rgba(34, 197, 94, 0.2) !important;
+}
+
+@keyframes fingerprintPulse {
+
+  0%,
+  100% {
+    box-shadow: 0 0 20px rgba(0, 240, 255, 0.15), 0 0 40px rgba(0, 240, 255, 0.05);
+  }
+
+  50% {
+    box-shadow: 0 0 35px rgba(0, 240, 255, 0.3), 0 0 70px rgba(0, 240, 255, 0.1);
+  }
+}
+
+@keyframes fingerprintScan {
+
+  0%,
+  100% {
+    box-shadow: 0 0 30px rgba(0, 240, 255, 0.3), 0 0 60px rgba(0, 240, 255, 0.15);
+    transform: scale(1);
+  }
+
+  50% {
+    box-shadow: 0 0 50px rgba(0, 240, 255, 0.5), 0 0 100px rgba(0, 240, 255, 0.25);
+    transform: scale(1.08);
+  }
+}
+
+/* Scanline sweep across welcome screen */
+.welcome-scanline {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, rgba(0, 240, 255, 0.4) 50%, transparent 100%);
+  animation: scanlineSweep 4s linear infinite;
+  z-index: 3;
+  pointer-events: none;
+}
+
+@keyframes scanlineSweep {
+  0% {
+    top: -2px;
+    opacity: 0;
+  }
+
+  10% {
+    opacity: 1;
+  }
+
+  90% {
+    opacity: 1;
+  }
+
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
 }
