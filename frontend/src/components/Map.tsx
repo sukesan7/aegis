@@ -681,11 +681,8 @@ export default function LiveMap({
   const fetchAlgoRace = async (scenario: any) => {
     try {
       setShowAlgoRace(true);
-      // Use ambulance's current position (real-time), fall back to scenario start
-      const cur = ambulanceMarker.current?.getLngLat();
-      const start = cur
-        ? { lat: cur.lat, lng: cur.lng }
-        : (scenario.start || { lat: 43.85421582751821, lng: -79.311760971958 });
+      // Always use the scenario's fixed start so paths are deterministic
+      const start = scenario.start || { lat: 43.85421582751821, lng: -79.311760971958 };
       const end = MARKHAM_STOUFFVILLE_HOSPITAL;
 
       const body = {
@@ -1337,7 +1334,10 @@ export default function LiveMap({
                 {Object.entries(SCENARIOS).map(([key, data]) => (
                   <button
                     key={key}
-                    onClick={() => onScenarioInject?.(data)}
+                    onClick={() => {
+                      onScenarioInject?.(data);
+                      if (data.isRedAlert) fetchAlgoRace(data);
+                    }}
                     className={`w-full text-left px-3 py-2 text-[10px] font-mono font-bold rounded-lg border transition-all duration-300 hover:scale-[1.02] active:scale-95 ${data.isRedAlert
                       ? 'border-red-500/40 text-red-500 bg-red-500/5 hover:bg-red-500 hover:text-white shadow-[0_0_15px_rgba(239,68,68,0.15)]'
                       : 'border-cyan-500/40 text-cyan-400 bg-cyan-500/5 hover:bg-cyan-500 hover:text-white shadow-[0_0_15px_rgba(0,240,255,0.15)]'
@@ -1374,7 +1374,11 @@ export default function LiveMap({
           onClick={() => {
             const next = !showEtaPanel;
             setShowEtaPanel(next);
-            if (next) fetchBothAlgoStats();
+            if (next) {
+              fetchBothAlgoStats();
+            } else {
+              setShowAlgoRace(false);
+            }
           }}
           className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold transition-all duration-300 ${showEtaPanel
             ? 'bg-cyan-500/30 border-cyan-400/50 text-cyan-300 shadow-[0_0_15px_rgba(0,240,255,0.2)]'

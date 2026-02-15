@@ -22,6 +22,11 @@ ox.settings.log_console = False
 
 AEGIS_ROUTE_ALGO = os.environ.get("AEGIS_ROUTE_ALGO", "dijkstra").lower()
 
+# Markham Stouffville Hospital — fixed destination for cardiac arrest scenarios
+MSH_LAT = 43.8335
+MSH_LNG = -79.2630
+_MSH_MATCH_THRESHOLD_DEG = 0.002  # ~200 m tolerance for coordinate matching
+
 
 # -------------------------------
 # Models
@@ -259,6 +264,89 @@ def _load_graph_cached(north: float, south: float, east: float, west: float) -> 
     bbox = (west, south, east, north)  # (left, bottom, right, top) for OSMnx v2
     G = ox.graph_from_bbox(bbox, network_type="drive", simplify=True)
     return G
+
+
+# -----------------------------------------------
+# Precomputed MSH shortest-path tree (reverse Dijkstra)
+# -----------------------------------------------
+import heapq as _heapq
+
+# Module-level cache: {(north, south, east, west): (msh_node, predecessors, distances)}
+_msh_spt_cache: Dict[tuple, Tuple[int, Dict[int, Optional[int]], Dict[int, float]]] = {}
+
+
+def _is_msh_destination(end: 'Coordinate') -> bool:
+    """Check if the destination coordinates match MSH within threshold."""
+    return (abs(end.lat - MSH_LAT) < _MSH_MATCH_THRESHOLD_DEG and
+            abs(end.lng - MSH_LNG) < _MSH_MATCH_THRESHOLD_DEG)
+
+
+def _get_msh_shortest_path_tree(
+    G: nx.MultiDiGraph, bbox_key: tuple
+) -> Tuple[int, Dict[int, Optional[int]], Dict[int, float]]:
+    """Return (msh_node, predecessors, distances) using a reverse Dijkstra from MSH.
+
+    'Reverse' means we run Dijkstra on the reversed graph so that
+    predecessors[node] gives the *next* node on the path FROM node TO msh_node.
+    This lets any source instantly reconstruct its path to MSH.
+    """
+    if bbox_key in _msh_spt_cache:
+        return _msh_spt_cache[bbox_key]
+
+    print(f"[MSH-CACHE] Building shortest-path tree for MSH (first call)...")
+    build_start = time.time()
+
+    msh_node = ox.nearest_nodes(G, X=MSH_LNG, Y=MSH_LAT)
+
+    # Reverse the graph: an edge u->v becomes v->u so that Dijkstra from MSH
+    # computes shortest paths from ALL nodes TO MSH.
+    R = G.reverse(copy=False)
+
+    dist: Dict[int, float] = {msh_node: 0.0}
+    pred: Dict[int, Optional[int]] = {msh_node: None}
+    visited: set = set()
+    heap = [(0.0, msh_node)]
+
+    while heap:
+        d, u = _heapq.heappop(heap)
+        if u in visited:
+            continue
+        visited.add(u)
+        for v, edge_dict in R[u].items():
+            if v in visited:
+                continue
+            best_key = min(edge_dict.keys(), key=lambda kk: float(edge_dict[kk].get("length", 1e18)))
+            w = float(edge_dict[best_key].get("length", 1.0))
+            new_dist = d + w
+            if v not in dist or new_dist < dist[v]:
+                dist[v] = new_dist
+                pred[v] = u
+                _heapq.heappush(heap, (new_dist, v))
+
+    elapsed = (time.time() - build_start) * 1000
+    print(f"[MSH-CACHE] Tree built: {len(visited)} nodes reachable in {elapsed:.1f}ms")
+
+    _msh_spt_cache[bbox_key] = (msh_node, pred, dist)
+    return msh_node, pred, dist
+
+
+def _reconstruct_from_msh_cache(
+    pred: Dict[int, Optional[int]], source_node: int, msh_node: int
+) -> List[int]:
+    """Reconstruct path from source_node to msh_node using precomputed predecessors."""
+    path = [source_node]
+    cur = source_node
+    seen = {cur}
+    while cur != msh_node:
+        nxt = pred.get(cur)
+        if nxt is None:
+            raise RuntimeError(f"No precomputed path from node {source_node} to MSH")
+        if nxt in seen:
+            raise RuntimeError("Cycle detected in precomputed path")
+        seen.add(nxt)
+        path.append(nxt)
+        cur = nxt
+    return path
 
 
 def _edge_list_from_graph(G: nx.MultiDiGraph):
@@ -773,18 +861,42 @@ async def calculate_route(req: RouteRequest):
         # 3) Shortest path (algorithm chosen by frontend)
         chosen_algo = (req.algorithm or AEGIS_ROUTE_ALGO).lower()
         explored_coords = None
-        if chosen_algo == "bmsssp":
-            path_nodes, explored = _bmsssp_path(G, orig_node, dest_node, include_exploration=req.include_exploration)
-            algo_label = "BM-SSSP (Duan\u2013Mao et al. 2025) // OSM"
-            if req.include_exploration:
-                explored_coords = explored
-        else:
-            if req.include_exploration:
-                path_nodes, explored = _dijkstra_with_exploration(G, orig_node, dest_node)
-                explored_coords = explored
+
+        # FAST PATH: use precomputed MSH cache for Dijkstra when destination is MSH
+        # and no road closures are active
+        use_msh_cache = (
+            chosen_algo == "dijkstra"
+            and _is_msh_destination(req.end)
+            and not req.blocked_edges
+        )
+
+        if use_msh_cache:
+            try:
+                bbox_key = (north, south, east, west)
+                msh_node, pred, dist = _get_msh_shortest_path_tree(G, bbox_key)
+                path_nodes = _reconstruct_from_msh_cache(pred, orig_node, msh_node)
+                # Override dest_node to the cached MSH node for consistency
+                dest_node = msh_node
+                algo_label = "Dijkstra (precomputed MSH cache) // OSM"
+                print(f"[MSH-CACHE] Cache HIT — path reconstructed ({len(path_nodes)} nodes)")
+            except RuntimeError:
+                # Fallback: source node not reachable from cache, use standard Dijkstra
+                print("[MSH-CACHE] Cache MISS — falling back to standard Dijkstra")
+                use_msh_cache = False
+
+        if not use_msh_cache:
+            if chosen_algo == "bmsssp":
+                path_nodes, explored = _bmsssp_path(G, orig_node, dest_node, include_exploration=req.include_exploration)
+                algo_label = "BM-SSSP (Duan\u2013Mao et al. 2025) // OSM"
+                if req.include_exploration:
+                    explored_coords = explored
             else:
-                path_nodes = nx.shortest_path(G, orig_node, dest_node, weight="length")
-            algo_label = "Dijkstra (networkx) // OSM"
+                if req.include_exploration:
+                    path_nodes, explored = _dijkstra_with_exploration(G, orig_node, dest_node)
+                    explored_coords = explored
+                else:
+                    path_nodes = nx.shortest_path(G, orig_node, dest_node, weight="length")
+                algo_label = "Dijkstra (networkx) // OSM"
 
         # 4) Polyline + edge metadata
         route_coords, edges_meta = _route_polyline_and_edges(G, path_nodes, req.scenario_type)

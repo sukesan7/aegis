@@ -129,173 +129,181 @@ export default function AlgoRaceMiniMap({ data, visible }: AlgoRaceMiniMapProps)
 
     // Run the exploration + race animation when data changes
     useEffect(() => {
-        if (!data || !mapRef.current || !mapRef.current.loaded()) return;
+        if (!data || !mapRef.current) return;
 
-        // Reset state
-        setDijkDone(false);
-        setBmssspDone(false);
-        setDijkMs(data.dijkstraExecMs);
-        setBmssspMs(data.bmssspExecMs);
-        setPhase('exploring');
-        if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+        const runAnimation = () => {
+            const m = mapRef.current;
+            if (!m) return;
 
-        // Fit bounds to encompass both routes + explored edges
-        const allCoords = [...data.dijkstraCoords, ...data.bmssspCoords];
-        if (allCoords.length > 0) {
-            const lngs = allCoords.map(c => c[0]);
-            const lats = allCoords.map(c => c[1]);
-            const bounds = new maplibregl.LngLatBounds(
-                [Math.min(...lngs) - 0.005, Math.min(...lats) - 0.005],
-                [Math.max(...lngs) + 0.005, Math.max(...lats) + 0.005],
-            );
-            mapRef.current.fitBounds(bounds, { padding: 20, duration: 0 });
-        }
+            // Reset state
+            setDijkDone(false);
+            setBmssspDone(false);
+            setDijkMs(data.dijkstraExecMs);
+            setBmssspMs(data.bmssspExecMs);
+            setPhase('exploring');
+            if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
 
-        // Place road closure markers
-        const closureFeatures = data.closurePoints.map(([lng, lat]) => ({
-            type: 'Feature' as const,
-            properties: {},
-            geometry: { type: 'Point' as const, coordinates: [lng, lat] },
-        }));
-        const closureSrc = mapRef.current?.getSource('race-closures') as any;
-        if (closureSrc) closureSrc.setData({ type: 'FeatureCollection', features: closureFeatures });
-
-        // Clear previous route lines
-        const dijkSrc = mapRef.current?.getSource('race-dijkstra') as any;
-        const bmssspSrc = mapRef.current?.getSource('race-bmsssp') as any;
-        if (dijkSrc) dijkSrc.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
-        if (bmssspSrc) bmssspSrc.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
-
-        // Animation timing — SINGLE UNIFIED RACE
-        // Both algorithms start at the same time.
-        // Total animation time for each is proportional to its execution_time_ms.
-        // The faster algorithm visibly finishes first.
-        const RACE_TOTAL_MS = 5000; // slowest algorithm takes this long total
-        const maxExec = Math.max(data.dijkstraExecMs, data.bmssspExecMs, 1);
-        const dijkTotalAnim = (data.dijkstraExecMs / maxExec) * RACE_TOTAL_MS;
-        const bmssspTotalAnim = (data.bmssspExecMs / maxExec) * RACE_TOTAL_MS;
-
-        // Split each algorithm's time: 60% exploration, 40% route solidifying
-        const dijkExploreTime = dijkTotalAnim * 0.6;
-        const dijkRouteTime = dijkTotalAnim * 0.4;
-        const bmssspExploreTime = bmssspTotalAnim * 0.6;
-        const bmssspRouteTime = bmssspTotalAnim * 0.4;
-
-        const dijkExplored = data.dijkstraExplored || [];
-        const bmssspExplored = data.bmssspExplored || [];
-
-        const startTime = performance.now();
-        let dijkFinished = false;
-        let bmssspFinished = false;
-
-        const tick = () => {
-            const elapsed = performance.now() - startTime;
-
-            // --- DIJKSTRA ---
-            if (!dijkFinished) {
-                if (elapsed < dijkExploreTime) {
-                    // Dijkstra exploration phase
-                    const progress = elapsed / dijkExploreTime;
-                    if (dijkExplored.length > 0) {
-                        const idx = Math.floor(progress * dijkExplored.length);
-                        const slice = dijkExplored.slice(0, idx);
-                        const features = slice.map(seg => ({
-                            type: 'Feature' as const, properties: {},
-                            geometry: { type: 'LineString' as const, coordinates: seg },
-                        }));
-                        const src = mapRef.current?.getSource('explore-dijkstra') as any;
-                        if (src) src.setData({ type: 'FeatureCollection', features });
-                    }
-                } else {
-                    // Dijkstra route solidifying phase
-                    // Show all exploration edges (done exploring)
-                    if (dijkExplored.length > 0) {
-                        const allFeatures = dijkExplored.map(seg => ({
-                            type: 'Feature' as const, properties: {},
-                            geometry: { type: 'LineString' as const, coordinates: seg },
-                        }));
-                        const expSrc = mapRef.current?.getSource('explore-dijkstra') as any;
-                        if (expSrc) expSrc.setData({ type: 'FeatureCollection', features: allFeatures });
-                    }
-
-                    const routeElapsed = elapsed - dijkExploreTime;
-                    const routeProgress = Math.min(1, routeElapsed / dijkRouteTime);
-                    const dijkIdx = Math.floor(routeProgress * data.dijkstraCoords.length);
-                    const dijkSlice = data.dijkstraCoords.slice(0, Math.max(2, dijkIdx));
-                    if (dijkSrc && dijkSlice.length >= 2) {
-                        dijkSrc.setData({
-                            type: 'Feature', properties: {},
-                            geometry: { type: 'LineString', coordinates: dijkSlice },
-                        });
-                    }
-                    if (routeProgress >= 1) {
-                        dijkFinished = true;
-                        setDijkDone(true);
-                    }
-                }
+            // Fit bounds to encompass both routes
+            const allCoords = [...data.dijkstraCoords, ...data.bmssspCoords];
+            if (allCoords.length > 0) {
+                const lngs = allCoords.map(c => c[0]);
+                const lats = allCoords.map(c => c[1]);
+                const bounds = new maplibregl.LngLatBounds(
+                    [Math.min(...lngs) - 0.005, Math.min(...lats) - 0.005],
+                    [Math.max(...lngs) + 0.005, Math.max(...lats) + 0.005],
+                );
+                m.fitBounds(bounds, { padding: 20, duration: 0 });
             }
 
-            // --- DUAN-MAO (BM-SSSP) ---
-            if (!bmssspFinished) {
-                if (elapsed < bmssspExploreTime) {
-                    // BM-SSSP exploration phase
-                    const progress = elapsed / bmssspExploreTime;
-                    if (bmssspExplored.length > 0) {
-                        const idx = Math.floor(progress * bmssspExplored.length);
-                        const slice = bmssspExplored.slice(0, idx);
-                        const features = slice.map(seg => ({
-                            type: 'Feature' as const, properties: {},
-                            geometry: { type: 'LineString' as const, coordinates: seg },
-                        }));
-                        const src = mapRef.current?.getSource('explore-bmsssp') as any;
-                        if (src) src.setData({ type: 'FeatureCollection', features });
-                    }
-                } else {
-                    // BM-SSSP route solidifying phase
-                    if (bmssspExplored.length > 0) {
-                        const allFeatures = bmssspExplored.map(seg => ({
-                            type: 'Feature' as const, properties: {},
-                            geometry: { type: 'LineString' as const, coordinates: seg },
-                        }));
-                        const expSrc = mapRef.current?.getSource('explore-bmsssp') as any;
-                        if (expSrc) expSrc.setData({ type: 'FeatureCollection', features: allFeatures });
-                    }
+            // Place road closure markers
+            const closureFeatures = data.closurePoints.map(([lng, lat]: [number, number]) => ({
+                type: 'Feature' as const,
+                properties: {},
+                geometry: { type: 'Point' as const, coordinates: [lng, lat] },
+            }));
+            const closureSrc = m.getSource('race-closures') as any;
+            if (closureSrc) closureSrc.setData({ type: 'FeatureCollection', features: closureFeatures });
 
-                    const routeElapsed = elapsed - bmssspExploreTime;
-                    const routeProgress = Math.min(1, routeElapsed / bmssspRouteTime);
-                    const bmssspIdx = Math.floor(routeProgress * data.bmssspCoords.length);
-                    const bmssspSlice = data.bmssspCoords.slice(0, Math.max(2, bmssspIdx));
-                    if (bmssspSrc && bmssspSlice.length >= 2) {
-                        bmssspSrc.setData({
-                            type: 'Feature', properties: {},
-                            geometry: { type: 'LineString', coordinates: bmssspSlice },
-                        });
-                    }
-                    if (routeProgress >= 1) {
-                        bmssspFinished = true;
-                        setBmssspDone(true);
+            // Clear previous route lines
+            const dijkSrc = m.getSource('race-dijkstra') as any;
+            const bmssspSrc = m.getSource('race-bmsssp') as any;
+            if (dijkSrc) dijkSrc.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+            if (bmssspSrc) bmssspSrc.setData({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [] } });
+
+            // Clear previous exploration edges
+            const expDijkSrc = m.getSource('explore-dijkstra') as any;
+            const expBmssspSrc = m.getSource('explore-bmsssp') as any;
+            if (expDijkSrc) expDijkSrc.setData({ type: 'FeatureCollection', features: [] });
+            if (expBmssspSrc) expBmssspSrc.setData({ type: 'FeatureCollection', features: [] });
+
+            // Animation timing — SINGLE UNIFIED RACE
+            const RACE_TOTAL_MS = 5000;
+            const maxExec = Math.max(data.dijkstraExecMs, data.bmssspExecMs, 1);
+            const dijkTotalAnim = (data.dijkstraExecMs / maxExec) * RACE_TOTAL_MS;
+            const bmssspTotalAnim = (data.bmssspExecMs / maxExec) * RACE_TOTAL_MS;
+
+            const dijkExploreTime = dijkTotalAnim * 0.6;
+            const dijkRouteTime = dijkTotalAnim * 0.4;
+            const bmssspExploreTime = bmssspTotalAnim * 0.6;
+            const bmssspRouteTime = bmssspTotalAnim * 0.4;
+
+            const dijkExplored = data.dijkstraExplored || [];
+            const bmssspExplored = data.bmssspExplored || [];
+
+            const startTime = performance.now();
+            let dijkFinished = false;
+            let bmssspFinished = false;
+
+            const tick = () => {
+                const elapsed = performance.now() - startTime;
+
+                // --- DIJKSTRA ---
+                if (!dijkFinished) {
+                    if (elapsed < dijkExploreTime) {
+                        const progress = elapsed / dijkExploreTime;
+                        if (dijkExplored.length > 0) {
+                            const idx = Math.floor(progress * dijkExplored.length);
+                            const slice = dijkExplored.slice(0, idx);
+                            const features = slice.map((seg: any) => ({
+                                type: 'Feature' as const, properties: {},
+                                geometry: { type: 'LineString' as const, coordinates: seg },
+                            }));
+                            const src = m.getSource('explore-dijkstra') as any;
+                            if (src) src.setData({ type: 'FeatureCollection', features });
+                        }
+                    } else {
+                        if (dijkExplored.length > 0) {
+                            const allFeatures = dijkExplored.map((seg: any) => ({
+                                type: 'Feature' as const, properties: {},
+                                geometry: { type: 'LineString' as const, coordinates: seg },
+                            }));
+                            const expSrc = m.getSource('explore-dijkstra') as any;
+                            if (expSrc) expSrc.setData({ type: 'FeatureCollection', features: allFeatures });
+                        }
+
+                        const routeElapsed = elapsed - dijkExploreTime;
+                        const routeProgress = Math.min(1, routeElapsed / dijkRouteTime);
+                        const dijkIdx = Math.floor(routeProgress * data.dijkstraCoords.length);
+                        const dijkSlice = data.dijkstraCoords.slice(0, Math.max(2, dijkIdx));
+                        if (dijkSrc && dijkSlice.length >= 2) {
+                            dijkSrc.setData({
+                                type: 'Feature', properties: {},
+                                geometry: { type: 'LineString', coordinates: dijkSlice },
+                            });
+                        }
+                        if (routeProgress >= 1) {
+                            dijkFinished = true;
+                            setDijkDone(true);
+                        }
                     }
                 }
-            }
 
-            // Update phase label
-            if (!dijkFinished || !bmssspFinished) {
-                if (elapsed < Math.min(dijkExploreTime, bmssspExploreTime)) {
-                    setPhase('exploring');
-                } else {
-                    setPhase('routing');
+                // --- DUAN-MAO (BM-SSSP) ---
+                if (!bmssspFinished) {
+                    if (elapsed < bmssspExploreTime) {
+                        const progress = elapsed / bmssspExploreTime;
+                        if (bmssspExplored.length > 0) {
+                            const idx = Math.floor(progress * bmssspExplored.length);
+                            const slice = bmssspExplored.slice(0, idx);
+                            const features = slice.map((seg: any) => ({
+                                type: 'Feature' as const, properties: {},
+                                geometry: { type: 'LineString' as const, coordinates: seg },
+                            }));
+                            const src = m.getSource('explore-bmsssp') as any;
+                            if (src) src.setData({ type: 'FeatureCollection', features });
+                        }
+                    } else {
+                        if (bmssspExplored.length > 0) {
+                            const allFeatures = bmssspExplored.map((seg: any) => ({
+                                type: 'Feature' as const, properties: {},
+                                geometry: { type: 'LineString' as const, coordinates: seg },
+                            }));
+                            const expSrc = m.getSource('explore-bmsssp') as any;
+                            if (expSrc) expSrc.setData({ type: 'FeatureCollection', features: allFeatures });
+                        }
+
+                        const routeElapsed = elapsed - bmssspExploreTime;
+                        const routeProgress = Math.min(1, routeElapsed / bmssspRouteTime);
+                        const bmssspIdx = Math.floor(routeProgress * data.bmssspCoords.length);
+                        const bmssspSlice = data.bmssspCoords.slice(0, Math.max(2, bmssspIdx));
+                        if (bmssspSrc && bmssspSlice.length >= 2) {
+                            bmssspSrc.setData({
+                                type: 'Feature', properties: {},
+                                geometry: { type: 'LineString', coordinates: bmssspSlice },
+                            });
+                        }
+                        if (routeProgress >= 1) {
+                            bmssspFinished = true;
+                            setBmssspDone(true);
+                        }
+                    }
                 }
-                animRef.current = requestAnimationFrame(tick);
-            } else {
-                // Both done — hold for 4 seconds
-                setPhase('done');
-                holdTimerRef.current = setTimeout(() => {
-                    // Mini-map stays visible but animation is done
-                }, 4000);
-            }
+
+                // Update phase label
+                if (!dijkFinished || !bmssspFinished) {
+                    if (elapsed < Math.min(dijkExploreTime, bmssspExploreTime)) {
+                        setPhase('exploring');
+                    } else {
+                        setPhase('routing');
+                    }
+                    animRef.current = requestAnimationFrame(tick);
+                } else {
+                    setPhase('done');
+                    holdTimerRef.current = setTimeout(() => {
+                        // Mini-map stays visible but animation is done
+                    }, 4000);
+                }
+            };
+
+            animRef.current = requestAnimationFrame(tick);
         };
 
-        animRef.current = requestAnimationFrame(tick);
+        // If map sources exist, run immediately; otherwise wait for load
+        if (mapRef.current.getSource('race-dijkstra')) {
+            runAnimation();
+        } else {
+            mapRef.current.once('load', runAnimation);
+        }
 
         return () => {
             if (animRef.current != null) {
