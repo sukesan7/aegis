@@ -1144,7 +1144,7 @@ export default function LiveMap({
 
       // Dynamic zoom/pitch for turn-awareness
       const BASE_ZOOM = 16;
-      const TURN_ZOOM = 18.5;
+      const TURN_ZOOM = 17;
       const TURN_DIST_THRESHOLD = 100; // start zooming in 100m before turn
 
       let targetZoom = BASE_ZOOM;
@@ -1162,7 +1162,7 @@ export default function LiveMap({
           center: pos,
           bearing: brg,
           zoom: targetZoom,
-          duration: 120,
+          duration: 500,
           easing: (x) => x,
           essential: true,
         });
