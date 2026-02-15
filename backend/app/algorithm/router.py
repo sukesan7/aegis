@@ -22,6 +22,11 @@ ox.settings.log_console = False
 
 AEGIS_ROUTE_ALGO = os.environ.get("AEGIS_ROUTE_ALGO", "dijkstra").lower()
 
+# Markham Stouffville Hospital — fixed destination for cardiac arrest scenarios
+MSH_LAT = 43.8335
+MSH_LNG = -79.2630
+_MSH_MATCH_THRESHOLD_DEG = 0.002  # ~200 m tolerance for coordinate matching
+
 
 # -------------------------------
 # Models
@@ -52,6 +57,8 @@ class RouteRequest(BaseModel):
     end: Coordinate
     scenario_type: str = "ROUTINE"  # ROUTINE / TRAUMA / CARDIAC ARREST etc.
     algorithm: str = "dijkstra"     # "dijkstra" or "bmsssp"
+    blocked_edges: Optional[List[List[float]]] = None  # [[lat, lng], ...] nodes to block
+    include_exploration: bool = False  # return explored edges for visualization
 
 
 class PivotNode(BaseModel):
@@ -89,6 +96,9 @@ class RouteResponse(BaseModel):
     steps: List[NavStep]
 
     narrative: List[str]
+
+    # Optional: edges explored during search (for mini-map visualization)
+    explored_coords: Optional[List[List[List[float]]]] = None  # [[[lng,lat],[lng,lat]], ...]
 
 
 # -------------------------------
@@ -176,9 +186,9 @@ def _default_speed_kph(highway: Any) -> float:
     if "tertiary" in h:
         return 55.0
     if "residential" in h:
-        return 40.0
+        return 50.0
     if "service" in h:
-        return 25.0
+        return 35.0
     return 50.0
 
 
@@ -213,6 +223,29 @@ def find_duan_mao_pivots(G: nx.MultiDiGraph, path_nodes: List[int], k: int = 2) 
     return pivots
 
 
+def _remove_blocked_edges(G: nx.MultiDiGraph, blocked_points: List[List[float]], radius_m: float = 200.0) -> nx.MultiDiGraph:
+    """Return a copy of G with edges near blocked_points removed.
+    Checks both endpoints AND midpoint of each edge against every blocked point."""
+    G2 = G.copy()
+    edges_to_remove = set()
+    for blat, blng in blocked_points:
+        bp = (blng, blat)  # haversine expects (lng, lat)
+        for u, v, k, data in G2.edges(keys=True, data=True):
+            u_lng, u_lat = G2.nodes[u]["x"], G2.nodes[u]["y"]
+            v_lng, v_lat = G2.nodes[v]["x"], G2.nodes[v]["y"]
+            mid_lng = (u_lng + v_lng) / 2.0
+            mid_lat = (u_lat + v_lat) / 2.0
+            # Check all three points: start, midpoint, end of edge
+            if (_haversine_m(bp, (u_lng, u_lat)) < radius_m or
+                _haversine_m(bp, (mid_lng, mid_lat)) < radius_m or
+                _haversine_m(bp, (v_lng, v_lat)) < radius_m):
+                edges_to_remove.add((u, v, k))
+    for u, v, k in edges_to_remove:
+        if G2.has_edge(u, v, k):
+            G2.remove_edge(u, v, k)
+    return G2
+
+
 def _bbox_for_route(start: Coordinate, end: Coordinate, pad_deg: float = 0.02):
     north = max(start.lat, end.lat) + pad_deg
     south = min(start.lat, end.lat) - pad_deg
@@ -233,6 +266,89 @@ def _load_graph_cached(north: float, south: float, east: float, west: float) -> 
     return G
 
 
+# -----------------------------------------------
+# Precomputed MSH shortest-path tree (reverse Dijkstra)
+# -----------------------------------------------
+import heapq as _heapq
+
+# Module-level cache: {(north, south, east, west): (msh_node, predecessors, distances)}
+_msh_spt_cache: Dict[tuple, Tuple[int, Dict[int, Optional[int]], Dict[int, float]]] = {}
+
+
+def _is_msh_destination(end: 'Coordinate') -> bool:
+    """Check if the destination coordinates match MSH within threshold."""
+    return (abs(end.lat - MSH_LAT) < _MSH_MATCH_THRESHOLD_DEG and
+            abs(end.lng - MSH_LNG) < _MSH_MATCH_THRESHOLD_DEG)
+
+
+def _get_msh_shortest_path_tree(
+    G: nx.MultiDiGraph, bbox_key: tuple
+) -> Tuple[int, Dict[int, Optional[int]], Dict[int, float]]:
+    """Return (msh_node, predecessors, distances) using a reverse Dijkstra from MSH.
+
+    'Reverse' means we run Dijkstra on the reversed graph so that
+    predecessors[node] gives the *next* node on the path FROM node TO msh_node.
+    This lets any source instantly reconstruct its path to MSH.
+    """
+    if bbox_key in _msh_spt_cache:
+        return _msh_spt_cache[bbox_key]
+
+    print(f"[MSH-CACHE] Building shortest-path tree for MSH (first call)...")
+    build_start = time.time()
+
+    msh_node = ox.nearest_nodes(G, X=MSH_LNG, Y=MSH_LAT)
+
+    # Reverse the graph: an edge u->v becomes v->u so that Dijkstra from MSH
+    # computes shortest paths from ALL nodes TO MSH.
+    R = G.reverse(copy=False)
+
+    dist: Dict[int, float] = {msh_node: 0.0}
+    pred: Dict[int, Optional[int]] = {msh_node: None}
+    visited: set = set()
+    heap = [(0.0, msh_node)]
+
+    while heap:
+        d, u = _heapq.heappop(heap)
+        if u in visited:
+            continue
+        visited.add(u)
+        for v, edge_dict in R[u].items():
+            if v in visited:
+                continue
+            best_key = min(edge_dict.keys(), key=lambda kk: float(edge_dict[kk].get("length", 1e18)))
+            w = float(edge_dict[best_key].get("length", 1.0))
+            new_dist = d + w
+            if v not in dist or new_dist < dist[v]:
+                dist[v] = new_dist
+                pred[v] = u
+                _heapq.heappush(heap, (new_dist, v))
+
+    elapsed = (time.time() - build_start) * 1000
+    print(f"[MSH-CACHE] Tree built: {len(visited)} nodes reachable in {elapsed:.1f}ms")
+
+    _msh_spt_cache[bbox_key] = (msh_node, pred, dist)
+    return msh_node, pred, dist
+
+
+def _reconstruct_from_msh_cache(
+    pred: Dict[int, Optional[int]], source_node: int, msh_node: int
+) -> List[int]:
+    """Reconstruct path from source_node to msh_node using precomputed predecessors."""
+    path = [source_node]
+    cur = source_node
+    seen = {cur}
+    while cur != msh_node:
+        nxt = pred.get(cur)
+        if nxt is None:
+            raise RuntimeError(f"No precomputed path from node {source_node} to MSH")
+        if nxt in seen:
+            raise RuntimeError("Cycle detected in precomputed path")
+        seen.add(nxt)
+        path.append(nxt)
+        cur = nxt
+    return path
+
+
 def _edge_list_from_graph(G: nx.MultiDiGraph):
     nodes = list(G.nodes)
     idx = {n: i for i, n in enumerate(nodes)}
@@ -243,7 +359,56 @@ def _edge_list_from_graph(G: nx.MultiDiGraph):
     return nodes, idx, edges
 
 
-def _bmsssp_path(G: nx.MultiDiGraph, source_node: int, target_node: int) -> List[int]:
+def _dijkstra_with_exploration(G: nx.MultiDiGraph, source_node: int, target_node: int) -> Tuple[List[int], List[List[List[float]]]]:
+    """Custom Dijkstra that returns (path_nodes, explored_edges).
+    explored_edges = list of [[lng1,lat1],[lng2,lat2]] segments in visitation order.
+    """
+    import heapq
+    dist = {source_node: 0.0}
+    pred = {source_node: None}
+    visited = set()
+    heap = [(0.0, source_node)]
+    explored_edges: List[List[List[float]]] = []
+
+    while heap:
+        d, u = heapq.heappop(heap)
+        if u in visited:
+            continue
+        visited.add(u)
+        if u == target_node:
+            break
+        for v, edge_dict in G[u].items():
+            if v in visited:
+                continue
+            # pick shortest parallel edge
+            best_key = min(edge_dict.keys(), key=lambda kk: float(edge_dict[kk].get("length", 1e18)))
+            w = float(edge_dict[best_key].get("length", 1.0))
+            new_dist = d + w
+            if v not in dist or new_dist < dist[v]:
+                dist[v] = new_dist
+                pred[v] = u
+                heapq.heappush(heap, (new_dist, v))
+            # Record this explored edge as a coordinate segment
+            try:
+                ux, uy = float(G.nodes[u]["x"]), float(G.nodes[u]["y"])
+                vx, vy = float(G.nodes[v]["x"]), float(G.nodes[v]["y"])
+                explored_edges.append([[ux, uy], [vx, vy]])
+            except (KeyError, TypeError):
+                pass
+
+    # Reconstruct path
+    if target_node not in pred:
+        raise RuntimeError("no path found via dijkstra")
+    path = []
+    cur = target_node
+    while cur is not None:
+        path.append(cur)
+        cur = pred[cur]
+    path.reverse()
+    return path, explored_edges
+
+
+def _bmsssp_path(G: nx.MultiDiGraph, source_node: int, target_node: int, include_exploration: bool = False) -> Tuple[List[int], List[List[List[float]]]]:
     nodes, idx, edges = _edge_list_from_graph(G)
     if source_node not in idx or target_node not in idx:
         raise RuntimeError("source/target not in subgraph")
@@ -262,6 +427,8 @@ def _bmsssp_path(G: nx.MultiDiGraph, source_node: int, target_node: int) -> List
     )
     runner = os.path.abspath(runner)
 
+    explored_edges: List[List[List[float]]] = []
+
     try:
         proc = subprocess.run(
             ["node", runner],
@@ -279,6 +446,19 @@ def _bmsssp_path(G: nx.MultiDiGraph, source_node: int, target_node: int) -> List
         src_i = payload["source"]
         dst_i = payload["target"]
 
+        # Build explored edges from predecessors (all nodes that got a predecessor)
+        if include_exploration:
+            for i, p in enumerate(pred):
+                if p >= 0 and i != src_i:
+                    try:
+                        n_i = nodes[i]
+                        n_p = nodes[p]
+                        ix, iy = float(G.nodes[n_i]["x"]), float(G.nodes[n_i]["y"])
+                        px, py = float(G.nodes[n_p]["x"]), float(G.nodes[n_p]["y"])
+                        explored_edges.append([[px, py], [ix, iy]])
+                    except (KeyError, TypeError, IndexError):
+                        pass
+
         # Reconstruct path (dst -> src)
         path_idx: List[int] = []
         cur = dst_i
@@ -294,11 +474,12 @@ def _bmsssp_path(G: nx.MultiDiGraph, source_node: int, target_node: int) -> List
             raise RuntimeError("no path found via bm-sssp")
 
         path_idx.reverse()
-        return [nodes[i] for i in path_idx]
+        return [nodes[i] for i in path_idx], explored_edges
 
     except Exception:
         # fallback
-        return nx.shortest_path(G, source_node, target_node, weight="length")
+        path = nx.shortest_path(G, source_node, target_node, weight="length")
+        return path, explored_edges
 
 
 def _route_polyline_and_edges(G: nx.MultiDiGraph, path_nodes: List[int], scenario_type: str) -> Tuple[List[List[float]], List[Dict[str, Any]]]:
@@ -669,18 +850,53 @@ async def calculate_route(req: RouteRequest):
         north, south, east, west = _round_bbox(north, south, east, west)
         G = _load_graph_cached(north, south, east, west)
 
+        # 1b) Apply road closures (blocked edges) if provided
+        if req.blocked_edges:
+            G = _remove_blocked_edges(G, req.blocked_edges)
+
         # 2) Snap to nearest drivable nodes (requires scikit-learn for unprojected graphs)
         orig_node = ox.nearest_nodes(G, X=req.start.lng, Y=req.start.lat)
         dest_node = ox.nearest_nodes(G, X=req.end.lng, Y=req.end.lat)
 
         # 3) Shortest path (algorithm chosen by frontend)
         chosen_algo = (req.algorithm or AEGIS_ROUTE_ALGO).lower()
-        if chosen_algo == "bmsssp":
-            path_nodes = _bmsssp_path(G, orig_node, dest_node)
-            algo_label = "BM-SSSP (Duan–Mao et al. 2025) // OSM"
-        else:
-            path_nodes = nx.shortest_path(G, orig_node, dest_node, weight="length")
-            algo_label = "Dijkstra (networkx) // OSM"
+        explored_coords = None
+
+        # FAST PATH: use precomputed MSH cache for Dijkstra when destination is MSH
+        # and no road closures are active
+        use_msh_cache = (
+            chosen_algo == "dijkstra"
+            and _is_msh_destination(req.end)
+            and not req.blocked_edges
+        )
+
+        if use_msh_cache:
+            try:
+                bbox_key = (north, south, east, west)
+                msh_node, pred, dist = _get_msh_shortest_path_tree(G, bbox_key)
+                path_nodes = _reconstruct_from_msh_cache(pred, orig_node, msh_node)
+                # Override dest_node to the cached MSH node for consistency
+                dest_node = msh_node
+                algo_label = "Dijkstra (precomputed MSH cache) // OSM"
+                print(f"[MSH-CACHE] Cache HIT — path reconstructed ({len(path_nodes)} nodes)")
+            except RuntimeError:
+                # Fallback: source node not reachable from cache, use standard Dijkstra
+                print("[MSH-CACHE] Cache MISS — falling back to standard Dijkstra")
+                use_msh_cache = False
+
+        if not use_msh_cache:
+            if chosen_algo == "bmsssp":
+                path_nodes, explored = _bmsssp_path(G, orig_node, dest_node, include_exploration=req.include_exploration)
+                algo_label = "BM-SSSP (Duan\u2013Mao et al. 2025) // OSM"
+                if req.include_exploration:
+                    explored_coords = explored
+            else:
+                if req.include_exploration:
+                    path_nodes, explored = _dijkstra_with_exploration(G, orig_node, dest_node)
+                    explored_coords = explored
+                else:
+                    path_nodes = nx.shortest_path(G, orig_node, dest_node, weight="length")
+                algo_label = "Dijkstra (networkx) // OSM"
 
         # 4) Polyline + edge metadata
         route_coords, edges_meta = _route_polyline_and_edges(G, path_nodes, req.scenario_type)
@@ -728,6 +944,7 @@ async def calculate_route(req: RouteRequest):
                 f"Optimized path found in {round(exec_ms, 2)}ms.",
                 f"Speed profile multiplier: x{mult:.2f} (scenario={req.scenario_type}).",
             ],
+            explored_coords=explored_coords,
         )
 
     except Exception as e:
