@@ -1095,6 +1095,10 @@ export default function LiveMap({
           // Check if a pending reroute is ready to apply
           if (pendingRerouteRef.current) {
             applyPendingReroute();
+            // Immediately re-center camera on the ambulance so it doesn't get left behind
+            if (followRef.current && map.current) {
+              map.current.jumpTo({ center: pos as any });
+            }
           } else {
             // Freeze the sim clock at this point so it resumes correctly after reroute
             const stopTime = m.cumTime[stopI] || 0;
