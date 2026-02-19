@@ -13,8 +13,12 @@
 > **Not a medical device. Not for real patient care or live dispatch.**  
 > Aegis is a hackathon prototype built to demonstrate how modern routing + UI telemetry + AI can reduce cognitive load and improve arrival times in emergency response.
 
-## YouTube Demonstration Video:
-https://www.youtube.com/watch?v=_uR9GesJHUE
+### 🏅**Winner:** [York Region's Best Community Impact Hack Winner](https://ctrl-hack-del-2.devpost.com)
+
+### Links:
+**[Youtube Demonstration & Showcase Video](https://www.youtube.com/watch?v=_uR9GesJHUE)**
+
+**[Devpost Project Link](https://devpost.com/software/aegis-c5rwk3)**
 
 ---
 
@@ -441,4 +445,13 @@ OpenStreetMap data is licensed under **ODbL** — see https://www.openstreetmap.
 
 Refer to the MIT License
 
-This project was created by Team **Instigate Cafe** @ the CTRL+HACK+DEL 2.0 Hackathon
+## Team Information
+
+> This project was created by Team **Instigate Cafe** @ the CTRL+HACK+DEL 2.0 Hackathon
+
+Team Members:
+[Sukesan Selvaraveendran](https://www.linkedin.com/in/sukesan/)
+[Sanchit Das](https://www.linkedin.com/in/sanchitdas/)
+[Nithursan Jeyabalasingam](https://www.linkedin.com/in/nithursanj/)
+[Yazanth Vickneswaran](https://www.linkedin.com/in/yazanth-vickneswaran/)
+
